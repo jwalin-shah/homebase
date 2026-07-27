@@ -1,0 +1,34 @@
+claims:
+  - id: CLM-00043
+    text: "Dafny compiles the recovery state machine and invariants into Go."
+    type: tool_capability
+    consequence: architectural
+    confidence: 1.0
+    status: verified
+    source:
+      kind: official_docs
+      locator: "https://dafny.org/dafny/DafnyRef/DafnyRef#sec-go"
+    scope: "supported Dafny subset"
+  - id: CLM-00044
+    text: "The Dafny-generated semantic slice correctly models bounded recovery without exceeding max attempts."
+    type: property_proved
+    consequence: security
+    confidence: 1.0
+    status: verified
+    source:
+      kind: formal_verification
+      command: "dafny translate go verification/dafny/Reducer.dfy"
+      exit_code: 0
+      artifact: internal/dafny_reducer/Reducer.go
+    scope: "Dafny execution semantics"
+  - id: CLM-00045
+    text: "The generated Dafny logic behaves compatibly within the existing Go boundaries."
+    type: tests_passed
+    consequence: functional
+    confidence: 1.0
+    status: verified
+    source:
+      kind: execution
+      command: "go test -count=1 -race ./internal/domain"
+      exit_code: 0
+    scope: "Property-tested domain trace execution"
