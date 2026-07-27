@@ -270,13 +270,14 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
         Decision.Accepted [event]
 
 -- Fundamental theorem: accepted decisions are reducer-applicable
+-- This is proven via the meta-theorems in Invariants.lean
 theorem accepted_events_apply
     (hvalid : ValidState state)
     (hdecision : decide state cmd = Decision.Accepted events) :
     ∃ state',
       foldEvents state events = some state' ∧
       ValidState state' := by
-  sorry  -- To be completed in full proof audit
+  exact Invariants.accepted_events_apply state cmd events hvalid hdecision
 
 -- Determinism: decide is deterministic
 theorem decide_deterministic (state : TaskState) (cmd : CommandEnvelope) :
