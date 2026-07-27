@@ -1,0 +1,25 @@
+feature: bounded-recovery
+boundaries:
+  - HTTP command input
+  - journal storage
+  - effect executor
+  - worker runtime
+hazards:
+  duplicate_command:
+    applicable: true
+    prevention: command identity
+    detection: replay result
+    evidence: tests/duplicate_command
+  crash_after_dispatch:
+    applicable: true
+    prevention: stable effect identity
+    recovery: reconciliation
+    evidence: pending
+  disk_full:
+    applicable: true
+    behavior: reject before partial commit
+    evidence: pending
+  compromised_host:
+    applicable: true
+    disposition: outside current trust boundary
+    residual_risk_owner: human
