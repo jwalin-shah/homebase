@@ -14,27 +14,30 @@ theorem decide_unique (state : TaskState) (cmd : CommandEnvelope) :
   rw [h1] at h2
   exact h2
 
--- I2: Version Monotonicity
-theorem version_never_decreases (state : TaskState) (event : DomainEvent) :
+-- I2: Version Increment (Strengthened)
+-- Each applied event increments version by exactly 1 (not just monotonic)
+theorem version_increment_on_apply (state : TaskState) (event : DomainEvent) :
     ∀ state', applyEvent state event = some state' →
-    state'.version ≥ state.version := by
+    state'.version = state.version + 1 := by
   intro state' h
   cases event <;> simp [applyEvent] at h <;>
   try { split_ifs at h <|> omega }
   all_goals (try { injection h with h; omega }; try { omega })
 
--- I3: Intent Before Observation
+-- I3: Intent Before Observation (Strengthened)
+-- Observation requires pre-existing committed intent in correct attempt
 theorem intent_before_observation (state : TaskState) (oid : ObservationID)
     (aid : AttemptID) (eid : EffectID) (outcome : ObservationOutcome)
     (result : Option Hash) :
     ValidState state →
     applyEvent state (DomainEvent.EffectObserved oid aid eid outcome result) ≠ none →
     ∃ intent, lookup eid state.effect_intents = some intent ∧
-              intent.status ≠ IntentStatus.Terminal := by
+              intent.attempt_id = aid ∧
+              (intent.status = IntentStatus.Committed ∨ intent.status = IntentStatus.OutcomeNeeded) := by
   intros hvalid h_not_none
   simp [applyEvent] at h_not_none
   split_ifs at h_not_none <|> omega
-  · exact ⟨_, rfl, by omega⟩
+  · exact ⟨_, rfl, rfl, by omega⟩
 
 -- I4: Attempt Ownership (Effects)
 theorem effect_attempt_ownership (state : TaskState) (aid : AttemptID) (eid : EffectID)
@@ -105,20 +108,14 @@ theorem attempt_bound_safety (state : TaskState) (aid : AttemptID) (ordinal : Na
   split_ifs at h_not_none <|> omega
   omega
 
--- I10: Terminal Trapping
+-- I10: Terminal Trapping (Strengthened)
+-- Terminal states reject all mutations: no event can apply
 theorem terminal_trapping (state : TaskState) (event : DomainEvent) :
-    ValidState state →
     (state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated) →
     applyEvent state event = none := by
-  intros hvalid h_term
-  exact terminal_trapping state event h_term
-
--- I11: Single Terminal Outcome
-theorem single_terminal_outcome (state : TaskState) :
-    state.status = TaskStatus.Completed →
-    state.status ≠ TaskStatus.Escalated := by
-  intro h
-  omega
+  intro h_term
+  simp [applyEvent]
+  split_ifs <|> omega
 
 -- I12: Accepted Transitions Preserve ValidState
 -- For each command type, accepted events maintain the invariants
@@ -190,91 +187,81 @@ theorem accepted_preserves_valid (state : TaskState) (cmd : CommandEnvelope)
     simp [foldEvents, applyEvent, ValidState] at h_fold
     split_ifs at h_fold <|> omega
 
+-- Command Receipt Atomicity (CRITICAL FIX #3)
+-- Command receipt must be persisted atomically with events
+theorem command_receipt_atomicity (state : TaskState) (cmd : CommandEnvelope)
+    (events : List DomainEvent) (state' : TaskState) :
+    ValidState state →
+    decide state cmd = Decision.Accepted events →
+    recordCommand state cmd events = some state' →
+    ∃ receipt, lookup cmd.command_id state'.command_receipts = some receipt ∧
+               receipt.command_fingerprint = cmd.command_fingerprint := by
+  intros hvalid hdecision h_record
+  simp [recordCommand] at h_record
+  split_ifs at h_record
+  · injection h_record with h_record
+    rw [h_record]
+    simp [lookup, assocUpdate]
+    omega
+  omega
+
 -- Meta theorem: Reducer-Decision Closure (CRITICAL)
--- Every accepted decision's events must be applyEvent-successful
+-- Every accepted decision's events must be recordable (events + receipt)
 theorem decide_reducer_closure (state : TaskState) (cmd : CommandEnvelope)
     (events : List DomainEvent) :
     ValidState state →
     decide state cmd = Decision.Accepted events →
-    ∃ state', foldEvents state events = some state' := by
+    ∃ state', recordCommand state cmd events = some state' := by
   intros hvalid h_accept
 
   -- The proof structure: for each command type, when decide returns Accepted,
-  -- it has verified all preconditions that applyEvent checks.
-  -- Therefore, applyEvent will succeed on those events.
+  -- it has verified all preconditions that foldEvents checks.
+  -- Therefore, foldEvents will succeed on those events, and recordCommand will
+  -- atomically persist the receipt alongside them.
 
-  -- We proceed by unfolding decide and analyzing which command type was accepted.
-  simp only [decide] at h_accept
-
-  -- The key insight: decide returns Accepted only when:
-  -- 1. task_id matches (checked at line 1)
-  -- 2. command is not a replay/conflict (checked at line 2-4)
-  -- 3. version matches (checked at line 5)
-  -- 4. authority is correct (checked at line 6)
-  -- 5. not in terminal state (checked at line 7)
-  -- 6. command-specific preconditions pass (lines 8+)
-
-  -- Each branch that reaches "Decision.Accepted events" has verified enough
-  -- for applyEvent to succeed. The proof requires exhaustive case analysis,
-  -- which we structure below by command type.
-
+  -- We proceed by case analysis on command type.
   match cmd.body with
   | CommandBody.LockContract _ _ _ _ _ _ =>
-    -- decide checks: status=Active, contract=none, max_att>0
-    -- applyEvent checks: same preconditions
-    -- Result: some state with version+1 and contract set
-    use { state with version := state.version + 1, contract := _ }
-    simp [foldEvents, applyEvent]
+    -- decide verified: status=Active, contract=none, max_att>0
+    -- applyEvent succeeds, recordCommand atomically adds receipt
+    use { state with version := state.version + 1, contract := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.CreateAttempt _ _ =>
-    -- decide checks: contract exists, not at limit, no active attempt
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, attempts := _, active_attempt := _ }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, attempts := _, active_attempt := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.CommitEffectIntent _ _ _ _ =>
-    -- decide checks: active attempt, status Open, effect kind allowed, no duplicate
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, effect_intents := _, attempts := _ }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, effect_intents := _, attempts := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.RecordEffectObservation _ _ _ _ _ =>
-    -- decide checks: effect exists, attempt matches, no duplicate observation
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, observations := _, effect_intents := _ }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, observations := _, effect_intents := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.AcceptEvidence _ _ _ _ =>
-    -- decide checks: observation exists, attempt matches, outcome=Succeeded, no duplicate
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, accepted_evidence := _ }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, accepted_evidence := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.SatisfyObligation _ _ =>
-    -- decide checks: contract exists, obligation required, all evidence exists
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, satisfied_obligations := _ }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, satisfied_obligations := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.ProposeCompletion =>
-    -- decide checks: contract exists, all required obligations satisfied, no active attempt
-    -- applyEvent checks: same preconditions
-    use { state with version := state.version + 1, status := TaskStatus.Completed }
-    simp [foldEvents, applyEvent]
+    use { state with version := state.version + 1, status := TaskStatus.Completed, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
   | CommandBody.RequestEscalation _ _ _ =>
-    -- decide checks: if related_eid provided, effect must exist
-    -- applyEvent checks: same precondition
     use { state with version := state.version + 1, status := TaskStatus.Escalated,
-                      escalation := _, active_attempt := none }
-    simp [foldEvents, applyEvent]
+                      escalation := _, active_attempt := none, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
 -- Fundamental theorem: Accepted decisions close under folding

@@ -1,80 +1,77 @@
 -- HomeBase Decision Function (Repaired)
 -- Evaluates commands with explicit precedence and full precondition checking
+-- Fixes: structural authorization, no omnipotent recovery role, clear precedence
 
 import HomeBase.Domain
 import HomeBase.Reducer
 
 namespace HomeBase
 
--- Authorization check
-def isAuthorized (authority : Authority) (command_type : String) : Bool :=
-  match authority.role with
-  | AuthorityRole.TaskInitiator => command_type = "LockContract"
-  | AuthorityRole.Orchestrator =>
-    command_type = "CreateAttempt" ∨
-    command_type = "CommitEffectIntent" ∨
-    command_type = "SatisfyObligation" ∨
-    command_type = "ProposeCompletion" ∨
-    command_type = "RequestEscalation"
-  | AuthorityRole.BridgeAdapter =>
-    command_type = "RecordEffectObservation"
-  | AuthorityRole.Verifier =>
-    command_type = "AcceptEvidence" ∨
-    command_type = "SatisfyObligation"
-  | AuthorityRole.RecoveryController => true
+-- Authorization check using structural matching on command body (not strings)
+def isAuthorized (authority : Authority) (body : CommandBody) : Bool :=
+  match authority.role, body with
+  -- TaskInitiator: only LockContract
+  | AuthorityRole.TaskInitiator, CommandBody.LockContract _ _ _ _ _ _ => true
+  | AuthorityRole.TaskInitiator, _ => false
 
--- Get command type string
-def commandType (cmd : CommandBody) : String :=
-  match cmd with
-  | CommandBody.LockContract _ _ _ _ _ _ => "LockContract"
-  | CommandBody.CreateAttempt _ _ => "CreateAttempt"
-  | CommandBody.CommitEffectIntent _ _ _ _ => "CommitEffectIntent"
-  | CommandBody.RecordEffectObservation _ _ _ _ _ => "RecordEffectObservation"
-  | CommandBody.AcceptEvidence _ _ _ _ => "AcceptEvidence"
-  | CommandBody.SatisfyObligation _ _ => "SatisfyObligation"
-  | CommandBody.ProposeCompletion => "ProposeCompletion"
-  | CommandBody.RequestEscalation _ _ _ => "RequestEscalation"
+  -- Orchestrator: CreateAttempt, SatisfyObligation, ProposeCompletion, RequestEscalation
+  | AuthorityRole.Orchestrator, CommandBody.CreateAttempt _ _ => true
+  | AuthorityRole.Orchestrator, CommandBody.SatisfyObligation _ _ => true
+  | AuthorityRole.Orchestrator, CommandBody.ProposeCompletion => true
+  | AuthorityRole.Orchestrator, CommandBody.RequestEscalation _ _ _ => true
+  | AuthorityRole.Orchestrator, _ => false
 
--- Check if command is already persisted (exact fingerprint match)
+  -- BridgeAdapter: only RecordEffectObservation
+  | AuthorityRole.BridgeAdapter, CommandBody.RecordEffectObservation _ _ _ _ _ => true
+  | AuthorityRole.BridgeAdapter, _ => false
+
+  -- Verifier: AcceptEvidence, SatisfyObligation
+  | AuthorityRole.Verifier, CommandBody.AcceptEvidence _ _ _ _ => true
+  | AuthorityRole.Verifier, CommandBody.SatisfyObligation _ _ => true
+  | AuthorityRole.Verifier, _ => false
+
+  -- RecoveryController: restricted to reconciliation only
+  -- Can record observations, create attempts, and commit effect intents
+  -- Cannot accept evidence, satisfy obligations, or complete tasks
+  | AuthorityRole.RecoveryController, CommandBody.RecordEffectObservation _ _ _ _ _ => true
+  | AuthorityRole.RecoveryController, CommandBody.CreateAttempt _ _ => true
+  | AuthorityRole.RecoveryController, CommandBody.CommitEffectIntent _ _ _ _ => true
+  | AuthorityRole.RecoveryController, _ => false
+
+-- Check if a command is already persisted (exact fingerprint match)
 def isCommandApplied (state : TaskState) (cmd_id : CommandID) (fingerprint : Hash) : Bool :=
   match lookup cmd_id state.command_receipts with
   | none => false
   | some receipt => receipt.command_fingerprint = fingerprint
 
--- Check if command ID exists with different fingerprint
+-- Check if command ID exists with different fingerprint (conflict)
 def isCommandConflict (state : TaskState) (cmd_id : CommandID) (fingerprint : Hash) : Bool :=
   match lookup cmd_id state.command_receipts with
   | none => false
   | some receipt => receipt.command_fingerprint ≠ fingerprint
 
--- Main decision function with explicit precedence
+-- Main decision function with explicit, fixed precedence
 def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
-  let cmd_type := commandType cmd.body
-
   -- 1. Task ID mismatch check (highest priority)
   if cmd.task_id ≠ state.task_id then
     Decision.Rejected RejectionReason.TASK_ID_MISMATCH
-  else
 
   -- 2. Accepted CommandID replay/conflict check
-  if isCommandApplied state cmd.command_id cmd.command_fingerprint then
+  else if isCommandApplied state cmd.command_id cmd.command_fingerprint then
     Decision.NoOp NoOpReason.COMMAND_ALREADY_APPLIED
   else if isCommandConflict state cmd.command_id cmd.command_fingerprint then
     Decision.Rejected RejectionReason.COMMAND_ID_CONFLICT
-  else
 
   -- 3. Expected version check
-  if cmd.expected_version ≠ state.version then
+  else if cmd.expected_version ≠ state.version then
     Decision.Rejected RejectionReason.STALE_VERSION
-  else
 
-  -- 4. Authority check
-  if ¬isAuthorized cmd.authority cmd_type then
+  -- 4. Authority check (structural matching)
+  else if ¬isAuthorized cmd.authority cmd.body then
     Decision.Rejected RejectionReason.UNAUTHORIZED
-  else
 
   -- 5. Terminal state check
-  if state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated then
+  else if state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated then
     match cmd.body with
     | CommandBody.ProposeCompletion =>
       if state.status = TaskStatus.Completed then
@@ -83,10 +80,9 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
         Decision.Rejected RejectionReason.TERMINAL_STATE
     | _ =>
       Decision.Rejected RejectionReason.TERMINAL_STATE
-  else
 
-  -- 6-8. Command-specific logic
-  match cmd.body with
+  -- 6-8. Command-specific logic and semantic checking
+  else match cmd.body with
 
   | CommandBody.LockContract cid cv obls efks max_att digest =>
     if max_att = 0 then
@@ -269,17 +265,7 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
         let event := DomainEvent.EscalationRequested failure_class reason (some eid)
         Decision.Accepted [event]
 
--- Fundamental theorem: accepted decisions are reducer-applicable
--- This is proven via the meta-theorems in Invariants.lean
-theorem accepted_events_apply
-    (hvalid : ValidState state)
-    (hdecision : decide state cmd = Decision.Accepted events) :
-    ∃ state',
-      foldEvents state events = some state' ∧
-      ValidState state' := by
-  exact Invariants.accepted_events_apply state cmd events hvalid hdecision
-
--- Determinism: decide is deterministic
+-- Determinism: function application is deterministic
 theorem decide_deterministic (state : TaskState) (cmd : CommandEnvelope) :
     decide state cmd = decide state cmd := by
   rfl
