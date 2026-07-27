@@ -1,0 +1,19 @@
+evidence:
+  id: EVD-M5-CRASH-003
+  claim_ids:
+    - CLM-M5-001
+    - CLM-M5-002
+    - CLM-M5-003
+  test:
+    name: TestEffect_CrashAfterRemoteSuccess
+    command: go test -run TestEffect_CrashAfterRemoteSuccess
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+  inputs:
+    effect_id: eff-123
+    failure_point: after_remote_apply_before_journal_append
+  assertions:
+    remote_application_count: 1
+    final_effect_state: Succeeded
+    idempotency_key_reused: true

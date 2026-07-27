@@ -12,12 +12,10 @@ claims:
   - id: CLM-M5-004
     text: "OutcomeUnknown states do not execute side effects or improperly terminate."
 assumptions:
-  - id: ASM-M5-001
-    text: "External systems honor idempotency keys when provided."
-  - id: ASM-M5-002
-    text: "Worker clocks are loosely synchronized enough to enforce lease expirations reliably."
   - id: ASM-M5-003
     text: "Dafny-generated Go code is never manually edited."
+  - id: ASM-M5-004
+    text: "Lease validity and expirations are decided exclusively by the HomeBase authority using a single observed clock source."
 required_evidence:
   - method: formal_verification
     artifact: "verification/dafny/EffectReducer.dfy proofs passing"
