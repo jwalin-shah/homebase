@@ -14,8 +14,9 @@ def isAuthorized (authority : Authority) (body : CommandBody) : Bool :=
   | AuthorityRole.TaskInitiator, CommandBody.LockContract _ _ _ _ _ _ => true
   | AuthorityRole.TaskInitiator, _ => false
 
-  -- Orchestrator: CreateAttempt, SatisfyObligation, ProposeCompletion, RequestEscalation
+  -- Orchestrator: CreateAttempt, ConcludeAttempt, SatisfyObligation, ProposeCompletion, RequestEscalation
   | AuthorityRole.Orchestrator, CommandBody.CreateAttempt _ _ => true
+  | AuthorityRole.Orchestrator, CommandBody.ConcludeAttempt _ => true
   | AuthorityRole.Orchestrator, CommandBody.SatisfyObligation _ _ => true
   | AuthorityRole.Orchestrator, CommandBody.ProposeCompletion => true
   | AuthorityRole.Orchestrator, CommandBody.RequestEscalation _ _ _ => true
@@ -235,6 +236,23 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
             | none =>
               let event := DomainEvent.ObligationSatisfied obid evidence_ids
               Decision.Accepted [event]
+
+  | CommandBody.ConcludeAttempt aid =>
+    if state.status ≠ TaskStatus.Active then
+      Decision.Rejected RejectionReason.INVALID_STATUS
+    else
+      match lookup aid state.attempts with
+      | none =>
+        Decision.Rejected RejectionReason.ATTEMPT_NOT_FOUND
+      | some attempt =>
+        -- All effect intents in this attempt must be Terminal
+        let all_intents_terminal := attempt.effect_ids.all fun eid =>
+          (lookup eid state.effect_intents).map (fun intent => intent.status = IntentStatus.Terminal) |>.getD false
+        if ¬all_intents_terminal then
+          Decision.Rejected RejectionReason.INVALID_STATUS
+        else
+          let event := DomainEvent.AttemptConcluded aid
+          Decision.Accepted [event]
 
   | CommandBody.ProposeCompletion =>
     if state.contract.isNone then

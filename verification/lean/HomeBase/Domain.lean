@@ -272,6 +272,10 @@ inductive DomainEvent where
       evidence_ids : Finset EvidenceID →
       DomainEvent
 
+  | AttemptConcluded :
+      attempt_id : AttemptID →
+      DomainEvent
+
   | TaskCompleted :
       DomainEvent
 
@@ -340,6 +344,10 @@ inductive CommandBody where
   | SatisfyObligation :
       obligation_id : ObligationID →
       evidence_ids : Finset EvidenceID →
+      CommandBody
+
+  | ConcludeAttempt :
+      attempt_id : AttemptID →
       CommandBody
 
   | ProposeCompletion :

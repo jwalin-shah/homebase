@@ -516,4 +516,48 @@ theorem fixture_escalation_invalid_effect_id :
     decide state cmd = Decision.Rejected RejectionReason.EFFECT_NOT_FOUND := by
   decide
 
+-- Fixture 15: conclude_attempt (New command: Explicit attempt conclusion)
+-- Tests that ConcludeAttempt requires all intents to be Terminal
+theorem fixture_conclude_attempt :
+    let state : TaskState := {
+      (emptyState taskId1) with
+      version := 4
+      status := TaskStatus.Active
+      active_attempt := some attemptId1
+      attempts := [(attemptId1, {
+        attempt_id := attemptId1
+        ordinal := 1
+        status := AttemptStatus.Open
+        effect_ids := {effectId1}
+      })]
+      contract := some {
+        contract_id := ContractID.mk "contract-conclude"
+        contract_version := ContractVersion.mk 1
+        contract_digest := Hash.mk "sha256-conclude"
+        required_obligations := {obligationId1}
+        allowed_effect_kinds := {effectKind}
+        max_attempts := 3
+      }
+      effect_intents := [(effectId1, {
+        effect_id := effectId1
+        attempt_id := attemptId1
+        effect_kind := effectKind
+        request_digest := Hash.mk "sha256-req"
+        status := IntentStatus.Terminal
+      })]
+    }
+    let cmd : CommandEnvelope := {
+      command_id := CommandID.mk "cmd-conclude"
+      task_id := taskId1
+      expected_version := 4
+      command_fingerprint := Hash.mk "fp-conclude"
+      authority := ⟨AuthorityID.mk "orch", AuthorityRole.Orchestrator⟩
+      correlation_id := CorrelationID.mk "corr-conclude"
+      causation_id := none
+      body := CommandBody.ConcludeAttempt attemptId1
+    }
+    -- Concluding attempt clears active_attempt
+    decide state cmd = Decision.Accepted [DomainEvent.AttemptConcluded attemptId1] := by
+  decide
+
 end HomeBase.Fixtures

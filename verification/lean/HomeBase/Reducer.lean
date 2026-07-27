@@ -27,9 +27,10 @@ def ValidState (state : TaskState) : Prop :=
     (lookup intent.attempt_id state.attempts |>.isSome ∧
      state.contract.isSome)) ∧
 
-  -- All observations reference existing intents and valid attempts
+  -- All observations reference existing intents with matching attempt_id
   (∀ oid obs, lookup oid state.observations = some obs →
     ∃ intent, lookup obs.effect_id state.effect_intents = some intent ∧
+              intent.attempt_id = obs.attempt_id ∧
               lookup intent.attempt_id state.attempts |>.isSome) ∧
 
   -- All accepted evidence references existing observations with succeeded outcome
@@ -250,6 +251,24 @@ def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
     else
       none
 
+  | DomainEvent.AttemptConcluded aid =>
+    if state.status = TaskStatus.Active then
+      match lookup aid state.attempts with
+      | none => none
+      | some attempt =>
+        -- All effect intents must be Terminal before conclusion
+        let all_intents_terminal := attempt.effect_ids.all fun eid =>
+          (lookup eid state.effect_intents).map (fun intent => intent.status = IntentStatus.Terminal) |>.getD false
+        if ¬all_intents_terminal then none
+        else
+          some {
+            state with
+            version := state.version + 1
+            active_attempt := none
+          }
+    else
+      none
+
   | DomainEvent.TaskCompleted =>
     if state.status = TaskStatus.Active then
       match state.contract with
@@ -325,6 +344,7 @@ def recordCommand (state : TaskState) (cmd : CommandEnvelope)
       | DomainEvent.EffectObserved _ _ _ _ _ => "EffectObserved"
       | DomainEvent.EvidenceAccepted _ _ _ _ => "EvidenceAccepted"
       | DomainEvent.ObligationSatisfied _ _ => "ObligationSatisfied"
+      | DomainEvent.AttemptConcluded _ => "AttemptConcluded"
       | DomainEvent.TaskCompleted => "TaskCompleted"
       | DomainEvent.EscalationRequested _ _ _ => "EscalationRequested"
     let receipt : CommandReceipt := {

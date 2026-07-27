@@ -175,6 +175,12 @@ theorem accepted_preserves_valid (state : TaskState) (cmd : CommandEnvelope)
     simp [foldEvents, applyEvent, ValidState] at h_fold
     split_ifs at h_fold <|> omega
 
+  | CommandBody.ConcludeAttempt aid =>
+    -- After AttemptConcluded: active_attempt cleared
+    -- ValidState holds: no active attempt in Terminal (but not terminal yet)
+    simp [foldEvents, applyEvent, ValidState] at h_fold
+    split_ifs at h_fold <|> omega
+
   | CommandBody.ProposeCompletion =>
     -- After TaskCompleted: status=Completed, active_attempt=none
     -- ValidState holds: all required obligations satisfied
@@ -250,6 +256,11 @@ theorem decide_reducer_closure (state : TaskState) (cmd : CommandEnvelope)
 
   | CommandBody.SatisfyObligation _ _ =>
     use { state with version := state.version + 1, satisfied_obligations := _, command_receipts := _ }
+    simp [recordCommand, foldEvents, applyEvent]
+    split_ifs <|> omega
+
+  | CommandBody.ConcludeAttempt _ =>
+    use { state with version := state.version + 1, active_attempt := none, command_receipts := _ }
     simp [recordCommand, foldEvents, applyEvent]
     split_ifs <|> omega
 
