@@ -1,45 +1,88 @@
 claims:
   - id: CLM-00043
+    type: external_tool
     text: "Dafny compiles the recovery state machine and invariants into Go."
-    type: tool_capability
-    consequence: architectural
-    confidence: 1.0
     status: verified
-    source:
-      kind: official_docs
+    evidence:
+      method: official_documentation
+      strength: strong
       locator: "https://dafny.org/dafny/DafnyRef/DafnyRef#sec-go"
     scope: "supported Dafny subset"
+    assumptions:
+      - "The Dafny compiler is trusted to preserve semantics."
+    invalidated_by:
+      - "Dafny compilation fails for valid Dafny code."
+      - "The generated Go code contains semantic mismatches."
+
   - id: CLM-00044
+    type: formal_property
     text: "The Dafny-generated semantic slice correctly models bounded recovery without exceeding max attempts."
-    type: property_proved
-    consequence: security
-    confidence: 1.0
     status: verified
-    source:
-      kind: formal_verification
-      command: "dafny translate go verification/dafny/Reducer.dfy"
-      exit_code: 0
-      artifact: internal/dafny_reducer/Reducer.go
+    depends_on:
+      - CLM-00043
+    evidence:
+      method: formal_verification
+      strength: strict
+      command: "dafny verify verification/dafny/Reducer.dfy"
+      verified_theorems:
+        - BoundNeverExceeds
+        - UniqueEffectIDs
+        - TerminalEmitsNoEffects
+        - RejectedOrNoOpChangesNothing
     scope: "Dafny execution semantics"
+    assumptions:
+      - "Z3 theorem prover is sound."
+    invalidated_by:
+      - "dafny verify fails."
+      - "A theorem is removed or bypassed in the specification."
+
   - id: CLM-00045
+    type: repository_fact
     text: "The generated Dafny logic behaves compatibly within the existing Go boundaries."
-    type: tests_passed
-    consequence: functional
-    confidence: 1.0
     status: verified
-    source:
-      kind: execution
+    depends_on:
+      - CLM-00043
+      - CLM-00044
+    evidence:
+      method: property_testing
+      strength: medium
       command: "go test -count=1 -race ./internal/domain"
       exit_code: 0
-    scope: "Property-tested domain trace execution"
+    compatibility_scope:
+      checked:
+        - API compatibility
+        - property tests
+        - race tests
+      not_checked:
+        - production workloads
+        - persistence failures
+    assumptions:
+      - "Generated Go code is not manually modified."
+      - "The domain test suite adequately exercises state transitions."
+    invalidated_by:
+      - "failing_property_test"
+      - "reducer_behavior_change"
+
   - id: CLM-00046
+    type: formal_property
     text: "The Effect lifecycle state machine mathematically prevents stale worker observations and bounds retries."
-    type: property_proved
-    consequence: architectural
-    confidence: 1.0
     status: proposed
-    source:
-      kind: formal_verification
-      command: "dafny translate go verification/dafny/Reducer.dfy"
-      exit_code: 0
+    depends_on:
+      - CLM-00043
+    evidence:
+      method: formal_verification
+      strength: strict
+      command: "dafny verify verification/dafny/EffectReducer.dfy"
+      verified_theorems:
+        - TerminalCannotReturnToPending
+        - UnexpiredClaimPreventsNewClaim
+        - RetriesBounded
+        - StaleWorkerCannotObserve
+        - DuplicateObservationRejected
     scope: "Dafny execution semantics"
+    assumptions:
+      - "Time is passed accurately and monotonically into the state machine."
+      - "Z3 theorem prover is sound."
+    invalidated_by:
+      - "dafny verify fails for EffectReducer.dfy."
+      - "A verified property is weakened or bypassed."

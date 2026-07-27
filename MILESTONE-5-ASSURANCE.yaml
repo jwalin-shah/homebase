@@ -1,0 +1,30 @@
+milestone:
+  id: M5
+  goal: Deterministic Effect Execution
+  description: Deterministically claim, execute, observe, and terminalize durably committed effect intents.
+claims:
+  - id: CLM-M5-001
+    text: "Effect IDs are deterministic based on command intent."
+  - id: CLM-M5-002
+    text: "Effect Claims are exclusive per lease."
+  - id: CLM-M5-003
+    text: "Effect retries are strictly bounded by policy."
+  - id: CLM-M5-004
+    text: "OutcomeUnknown states do not execute side effects or improperly terminate."
+assumptions:
+  - id: ASM-M5-001
+    text: "External systems honor idempotency keys when provided."
+  - id: ASM-M5-002
+    text: "Worker clocks are loosely synchronized enough to enforce lease expirations reliably."
+  - id: ASM-M5-003
+    text: "Dafny-generated Go code is never manually edited."
+required_evidence:
+  - method: formal_verification
+    artifact: "verification/dafny/EffectReducer.dfy proofs passing"
+  - method: property_testing
+    artifact: "Fake executor crash and concurrency tests passing"
+  - method: integration_testing
+    artifact: "Journal-backed repository preserving state consistently"
+acceptance:
+  - "All required claims verified"
+  - "No open discrepancies affecting M5"
