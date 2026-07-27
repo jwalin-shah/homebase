@@ -1,0 +1,23 @@
+id: HB-RECOVERY-001
+statement: >
+  For each AttemptID, no more than two distinct recovery effects
+  may be dispatched.
+examples:
+  allowed:
+    - zero recoveries
+    - one recovery
+    - two recoveries
+  forbidden:
+    - three recoveries
+    - duplicate dispatch after restart
+    - extra dispatch after lost acknowledgement
+scope:
+  includes:
+    - concurrent commands
+    - process restart
+    - duplicate command replay
+  excludes:
+    - compromised host
+    - corrupted signing key
+owner: human
+status: draft
