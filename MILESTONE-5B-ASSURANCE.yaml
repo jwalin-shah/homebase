@@ -1,0 +1,26 @@
+milestone:
+  id: M5B.0
+  goal: Capability-Governed Effect Policy
+  description: Define explicit adapter capabilities as data, allowing the deterministic core to safely route unknown outcomes based on verified provider properties.
+claims:
+  - id: CLM-M5B-001
+    text: "OutcomeUnknown transitions to ManualResolution if neither idempotency nor lookup is verified."
+  - id: CLM-M5B-002
+    text: "OutcomeUnknown transitions to ReconciliationRequired if lookup is verified."
+  - id: CLM-M5B-003
+    text: "OutcomeUnknown transitions to RetryAuthorized if idempotency is verified and lookup is unavailable."
+  - id: CLM-M5B-004
+    text: "Unverified capability declarations cannot authorize automatic retry."
+assumptions:
+  - id: ASM-M5B-001
+    text: "Dafny receives capabilities as data and does not invoke live adapters."
+  - id: ASM-M5B-002
+    text: "Capability claims must be backed by evidence (documentation or contract tests) before being marked verified."
+required_evidence:
+  - method: formal_verification
+    artifact: "verification/dafny/EffectReducer.dfy capability proofs passing"
+  - method: property_testing
+    artifact: "Fake adapters covering all capability classes in Go test matrix"
+acceptance:
+  - "All required claims verified"
+  - "No unverified capabilities bypass safety rules"
