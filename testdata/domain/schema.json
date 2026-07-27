@@ -1,0 +1,180 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HomeBase Domain Conformance Fixture",
+  "description": "Defines the format for domain and ledger conformance test fixtures",
+  "type": "object",
+  "required": [
+    "fixture_id",
+    "fixture_version",
+    "title",
+    "description",
+    "scenario",
+    "initial_state",
+    "commands",
+    "expected_decisions"
+  ],
+  "properties": {
+    "fixture_id": {
+      "type": "string",
+      "description": "Unique identifier for this fixture (e.g., 'happy_path')",
+      "pattern": "^[a-z_]+$"
+    },
+    "fixture_version": {
+      "type": "string",
+      "description": "Version of this fixture (e.g., '1.0.0')",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable title"
+    },
+    "description": {
+      "type": "string",
+      "description": "What this fixture tests (invariants, edge cases, etc.)"
+    },
+    "scenario": {
+      "type": "string",
+      "enum": ["happy_path", "recovery", "idempotency", "conflict", "completion", "escalation"],
+      "description": "Category of test"
+    },
+    "initial_state": {
+      "type": "object",
+      "description": "Initial TaskState before processing commands",
+      "properties": {
+        "task_id": { "type": "string" },
+        "version": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["Active", "Completed", "Escalated"] },
+        "contract": {
+          "type": ["object", "null"],
+          "properties": {
+            "contract_id": { "type": "string" },
+            "contract_version": { "type": "integer" },
+            "contract_digest": { "type": "string" }
+          }
+        }
+      },
+      "required": ["task_id", "version", "status"]
+    },
+    "commands": {
+      "type": "array",
+      "description": "Array of CommandEnvelopes to process",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command_id": { "type": "string" },
+          "task_id": { "type": "string" },
+          "expected_version": { "type": "integer" },
+          "authority": {
+            "type": "object",
+            "properties": {
+              "principal_id": { "type": "string" },
+              "role": { "enum": ["TaskInitiator", "Orchestrator", "BridgeAdapter", "Verifier", "RecoveryController"] }
+            },
+            "required": ["principal_id", "role"]
+          },
+          "correlation_id": { "type": "string" },
+          "causation_id": { "type": ["string", "null"] },
+          "issued_at": { "type": "string", "format": "date-time" },
+          "body": {
+            "type": "object",
+            "description": "Command-specific payload (varies by command type)"
+          }
+        },
+        "required": ["command_id", "task_id", "expected_version", "authority", "correlation_id", "issued_at", "body"]
+      }
+    },
+    "expected_decisions": {
+      "type": "array",
+      "description": "Array of Decision objects (one per command). Must have same length as commands array.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "decision_type": { "const": "Accepted" },
+              "events": {
+                "type": "array",
+                "description": "RecordedDomainEvent objects",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "aggregate_version": { "type": "integer" },
+                    "domain_event": {
+                      "type": "object",
+                      "properties": {
+                        "event_type": { "type": "string" },
+                        "payload": { "type": "object" }
+                      },
+                      "required": ["event_type"]
+                    },
+                    "origin": {
+                      "type": "object",
+                      "properties": {
+                        "command_id": { "type": "string" },
+                        "command_fingerprint": { "type": "string" },
+                        "authority": {
+                          "type": "object",
+                          "properties": {
+                            "principal_id": { "type": "string" },
+                            "role": { "type": "string" }
+                          }
+                        },
+                        "correlation_id": { "type": "string" },
+                        "causation_id": { "type": ["string", "null"] }
+                      },
+                      "required": ["command_id", "command_fingerprint", "authority", "correlation_id"]
+                    }
+                  },
+                  "required": ["aggregate_version", "domain_event", "origin"]
+                }
+              }
+            },
+            "required": ["decision_type", "events"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "decision_type": { "const": "NoOp" },
+              "reason_code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["decision_type", "reason_code"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "decision_type": { "const": "Rejected" },
+              "reason_code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["decision_type", "reason_code"]
+          }
+        ]
+      }
+    },
+    "invariants_verified": {
+      "type": "array",
+      "description": "Which domain invariants this fixture validates",
+      "items": {
+        "enum": [
+          "VersionMonotonicity",
+          "ExpectedVersionSafety",
+          "IntentBeforeObservation",
+          "AttemptOwnership",
+          "StableEffectIdentity",
+          "EvidenceProvenance",
+          "ObligationProvenance",
+          "CompletionSoundness",
+          "AttemptBoundSafety",
+          "TerminalTrapping",
+          "SingleTerminalOutcome",
+          "DeterministicDecision"
+        ]
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional context or edge cases being tested"
+    }
+  }
+}

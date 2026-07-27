@@ -1,0 +1,48 @@
+{
+  "fixture_id": "stale_command",
+  "fixture_version": "1.0.0",
+  "title": "Stale Version: Optimistic Concurrency Rejection",
+  "description": "Tests that a command with wrong expected_version is rejected (STALE_VERSION)",
+  "scenario": "recovery",
+  "initial_state": {
+    "task_id": "task-002",
+    "version": 2,
+    "status": "Active",
+    "contract": {
+      "contract_id": "contract-abc",
+      "contract_version": 1,
+      "contract_digest": "sha256-contract-abc"
+    }
+  },
+  "commands": [
+    {
+      "command_id": "cmd-stale-001",
+      "task_id": "task-002",
+      "expected_version": 1,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-002",
+      "causation_id": null,
+      "issued_at": "2026-07-26T11:00:00Z",
+      "body": {
+        "command_type": "CreateAttempt",
+        "attempt_id": "attempt-2a",
+        "ordinal": 1
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Rejected",
+      "reason_code": "STALE_VERSION",
+      "message": "Expected version 1 but current version is 2. Optimistic concurrency check failed."
+    }
+  ],
+  "invariants_verified": [
+    "ExpectedVersionSafety",
+    "VersionMonotonicity"
+  ],
+  "notes": "Simulates a race condition where the command was prepared against an older state. The kernel rejects it without modifying state."
+}

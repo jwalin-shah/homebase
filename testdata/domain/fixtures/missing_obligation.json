@@ -1,0 +1,46 @@
+{
+  "fixture_id": "missing_obligation",
+  "fixture_version": "1.0.0",
+  "title": "Missing Obligation: ProposeCompletion Fails",
+  "description": "Tests that ProposeCompletion is rejected when required obligations are not satisfied",
+  "scenario": "completion",
+  "initial_state": {
+    "task_id": "task-005",
+    "version": 6,
+    "status": "Active",
+    "contract": {
+      "contract_id": "contract-jkl",
+      "contract_version": 1,
+      "contract_digest": "sha256-contract-jkl"
+    }
+  },
+  "commands": [
+    {
+      "command_id": "cmd-missing-001",
+      "task_id": "task-005",
+      "expected_version": 6,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-005",
+      "causation_id": null,
+      "issued_at": "2026-07-26T14:00:00Z",
+      "body": {
+        "command_type": "ProposeCompletion"
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Rejected",
+      "reason_code": "UNMET_OBLIGATIONS",
+      "message": "Cannot complete task. Required obligations not satisfied: [obligation-req-1, obligation-req-2]. Only satisfied: []"
+    }
+  ],
+  "invariants_verified": [
+    "CompletionSoundness",
+    "ObligationProvenance"
+  ],
+  "notes": "The task has a contract that requires obligations [obligation-req-1, obligation-req-2], but none are satisfied yet. ProposeCompletion must fail. This is a safety invariant: we cannot mark a task complete unless ALL required obligations are proven."
+}

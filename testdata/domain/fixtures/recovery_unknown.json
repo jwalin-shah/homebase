@@ -1,0 +1,141 @@
+{
+  "fixture_id": "recovery_unknown",
+  "fixture_version": "1.0.0",
+  "title": "Recovery: Unknown Outcome Escalates and Traps Terminal State",
+  "description": "Tests that observing Unknown outcome triggers escalation to Escalated state, and all subsequent operational commands are rejected",
+  "scenario": "recovery",
+  "initial_state": {
+    "task_id": "task-006",
+    "version": 4,
+    "status": "Active",
+    "contract": {
+      "contract_id": "contract-mno",
+      "contract_version": 1,
+      "contract_digest": "sha256-contract-mno"
+    }
+  },
+  "commands": [
+    {
+      "command_id": "cmd-unknown-001",
+      "task_id": "task-006",
+      "expected_version": 4,
+      "authority": {
+        "principal_id": "bridge-adapter-01",
+        "role": "BridgeAdapter"
+      },
+      "correlation_id": "corr-006",
+      "causation_id": null,
+      "issued_at": "2026-07-26T15:00:00Z",
+      "body": {
+        "command_type": "RecordEffectObservation",
+        "observation_id": "obs-unknown-1",
+        "attempt_id": "attempt-6",
+        "effect_id": "effect-6",
+        "outcome": "Unknown",
+        "result_digest": null
+      }
+    },
+    {
+      "command_id": "cmd-unknown-002",
+      "task_id": "task-006",
+      "expected_version": 5,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-006",
+      "causation_id": "cmd-unknown-001",
+      "issued_at": "2026-07-26T15:00:01Z",
+      "body": {
+        "command_type": "RequestEscalation",
+        "failure_class": "INDETERMINATE_OUTCOME",
+        "reason": "Effect outcome is unknown; cannot recover automatically. Escalating to operator."
+      }
+    },
+    {
+      "command_id": "cmd-unknown-003",
+      "task_id": "task-006",
+      "expected_version": 6,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-006",
+      "causation_id": "cmd-unknown-002",
+      "issued_at": "2026-07-26T15:00:02Z",
+      "body": {
+        "command_type": "CreateAttempt",
+        "attempt_id": "attempt-7",
+        "ordinal": 2
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 4,
+          "domain_event": {
+            "event_type": "EffectObserved",
+            "payload": {
+              "observation_id": "obs-unknown-1",
+              "attempt_id": "attempt-6",
+              "effect_id": "effect-6",
+              "outcome": "Unknown",
+              "result_digest": null
+            }
+          },
+          "origin": {
+            "command_id": "cmd-unknown-001",
+            "command_fingerprint": "sha256-cmd-unknown-001-body",
+            "authority": {
+              "principal_id": "bridge-adapter-01",
+              "role": "BridgeAdapter"
+            },
+            "correlation_id": "corr-006",
+            "causation_id": null
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 5,
+          "domain_event": {
+            "event_type": "EscalationRequested",
+            "payload": {
+              "failure_class": "INDETERMINATE_OUTCOME",
+              "reason": "Effect outcome is unknown; cannot recover automatically. Escalating to operator.",
+              "related_effect_id": "effect-6"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-unknown-002",
+            "command_fingerprint": "sha256-cmd-unknown-002-body",
+            "authority": {
+              "principal_id": "homebase-orch-01",
+              "role": "Orchestrator"
+            },
+            "correlation_id": "corr-006",
+            "causation_id": "cmd-unknown-001"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Rejected",
+      "reason_code": "TERMINAL_STATE",
+      "message": "Cannot execute CreateAttempt: task is in Escalated state. No operational commands accepted in terminal states."
+    }
+  ],
+  "invariants_verified": [
+    "TerminalTrapping",
+    "SingleTerminalOutcome",
+    "DeterministicDecision",
+    "IntentBeforeObservation"
+  ],
+  "notes": "Complete escalation flow: (1) Bridge reports Unknown outcome. (2) Attempt is marked with Unknown outcome. (3) EscalationRequested event transitions status to Escalated. (4) Task is now terminal; subsequent operational commands (CreateAttempt) are rejected with TERMINAL_STATE. This proves Terminal Trapping: once Escalated, no further state mutations are allowed."
+}

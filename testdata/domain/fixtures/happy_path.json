@@ -1,0 +1,339 @@
+{
+  "fixture_id": "happy_path",
+  "fixture_version": "1.0.0",
+  "title": "Happy Path: Task Completion",
+  "description": "Normal workflow: lock contract, create attempt, commit effect, observe success, accept evidence, satisfy obligation, propose completion → TaskCompleted",
+  "scenario": "happy_path",
+  "initial_state": {
+    "task_id": "task-001",
+    "version": 0,
+    "status": "Active"
+  },
+  "commands": [
+    {
+      "command_id": "cmd-001",
+      "task_id": "task-001",
+      "expected_version": 0,
+      "authority": {
+        "principal_id": "homebase-init-01",
+        "role": "TaskInitiator"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": null,
+      "issued_at": "2026-07-26T10:00:00Z",
+      "body": {
+        "command_type": "LockContract",
+        "contract_id": "contract-xyz",
+        "contract_version": 1,
+        "required_obligations": ["obs-req-1"],
+        "allowed_effect_kinds": ["spawn_worker"],
+        "max_attempts": 3,
+        "contract_digest": "sha256-contract-xyz"
+      }
+    },
+    {
+      "command_id": "cmd-002",
+      "task_id": "task-001",
+      "expected_version": 1,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-001",
+      "issued_at": "2026-07-26T10:00:01Z",
+      "body": {
+        "command_type": "CreateAttempt",
+        "attempt_id": "attempt-1",
+        "ordinal": 1
+      }
+    },
+    {
+      "command_id": "cmd-003",
+      "task_id": "task-001",
+      "expected_version": 2,
+      "authority": {
+        "principal_id": "bridge-adapter-01",
+        "role": "BridgeAdapter"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-002",
+      "issued_at": "2026-07-26T10:00:02Z",
+      "body": {
+        "command_type": "CommitEffectIntent",
+        "attempt_id": "attempt-1",
+        "effect_id": "effect-1",
+        "effect_kind": "spawn_worker",
+        "request_digest": "sha256-worker-request"
+      }
+    },
+    {
+      "command_id": "cmd-004",
+      "task_id": "task-001",
+      "expected_version": 3,
+      "authority": {
+        "principal_id": "bridge-adapter-01",
+        "role": "BridgeAdapter"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-003",
+      "issued_at": "2026-07-26T10:00:03Z",
+      "body": {
+        "command_type": "RecordEffectObservation",
+        "observation_id": "obs-1",
+        "attempt_id": "attempt-1",
+        "effect_id": "effect-1",
+        "outcome": "Succeeded",
+        "result_digest": "sha256-worker-result"
+      }
+    },
+    {
+      "command_id": "cmd-005",
+      "task_id": "task-001",
+      "expected_version": 4,
+      "authority": {
+        "principal_id": "verifier-01",
+        "role": "Verifier"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-004",
+      "issued_at": "2026-07-26T10:00:04Z",
+      "body": {
+        "command_type": "AcceptEvidence",
+        "evidence_id": "evidence-1",
+        "attempt_id": "attempt-1",
+        "source_observation_id": "obs-1",
+        "evidence_digest": "sha256-evidence-1"
+      }
+    },
+    {
+      "command_id": "cmd-006",
+      "task_id": "task-001",
+      "expected_version": 5,
+      "authority": {
+        "principal_id": "verifier-01",
+        "role": "Verifier"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-005",
+      "issued_at": "2026-07-26T10:00:05Z",
+      "body": {
+        "command_type": "SatisfyObligation",
+        "obligation_id": "obs-req-1",
+        "evidence_ids": ["evidence-1"]
+      }
+    },
+    {
+      "command_id": "cmd-007",
+      "task_id": "task-001",
+      "expected_version": 6,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-001",
+      "causation_id": "cmd-006",
+      "issued_at": "2026-07-26T10:00:06Z",
+      "body": {
+        "command_type": "ProposeCompletion"
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 0,
+          "domain_event": {
+            "event_type": "ContractLocked",
+            "payload": {
+              "contract_id": "contract-xyz",
+              "contract_version": 1,
+              "required_obligations": ["obs-req-1"],
+              "allowed_effect_kinds": ["spawn_worker"],
+              "max_attempts": 3,
+              "contract_digest": "sha256-contract-xyz"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-001",
+            "command_fingerprint": "sha256-cmd-001-body",
+            "authority": {
+              "principal_id": "homebase-init-01",
+              "role": "TaskInitiator"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": null
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 1,
+          "domain_event": {
+            "event_type": "AttemptCreated",
+            "payload": {
+              "attempt_id": "attempt-1",
+              "ordinal": 1
+            }
+          },
+          "origin": {
+            "command_id": "cmd-002",
+            "command_fingerprint": "sha256-cmd-002-body",
+            "authority": {
+              "principal_id": "homebase-orch-01",
+              "role": "Orchestrator"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-001"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 2,
+          "domain_event": {
+            "event_type": "EffectIntentCommitted",
+            "payload": {
+              "attempt_id": "attempt-1",
+              "effect_id": "effect-1",
+              "effect_kind": "spawn_worker",
+              "request_digest": "sha256-worker-request"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-003",
+            "command_fingerprint": "sha256-cmd-003-body",
+            "authority": {
+              "principal_id": "bridge-adapter-01",
+              "role": "BridgeAdapter"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-002"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 3,
+          "domain_event": {
+            "event_type": "EffectObserved",
+            "payload": {
+              "observation_id": "obs-1",
+              "attempt_id": "attempt-1",
+              "effect_id": "effect-1",
+              "outcome": "Succeeded",
+              "result_digest": "sha256-worker-result"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-004",
+            "command_fingerprint": "sha256-cmd-004-body",
+            "authority": {
+              "principal_id": "bridge-adapter-01",
+              "role": "BridgeAdapter"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-003"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 4,
+          "domain_event": {
+            "event_type": "EvidenceAccepted",
+            "payload": {
+              "evidence_id": "evidence-1",
+              "attempt_id": "attempt-1",
+              "source_observation_id": "obs-1",
+              "evidence_digest": "sha256-evidence-1"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-005",
+            "command_fingerprint": "sha256-cmd-005-body",
+            "authority": {
+              "principal_id": "verifier-01",
+              "role": "Verifier"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-004"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 5,
+          "domain_event": {
+            "event_type": "ObligationSatisfied",
+            "payload": {
+              "obligation_id": "obs-req-1",
+              "evidence_ids": ["evidence-1"]
+            }
+          },
+          "origin": {
+            "command_id": "cmd-006",
+            "command_fingerprint": "sha256-cmd-006-body",
+            "authority": {
+              "principal_id": "verifier-01",
+              "role": "Verifier"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-005"
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 6,
+          "domain_event": {
+            "event_type": "TaskCompleted",
+            "payload": {}
+          },
+          "origin": {
+            "command_id": "cmd-007",
+            "command_fingerprint": "sha256-cmd-007-body",
+            "authority": {
+              "principal_id": "homebase-orch-01",
+              "role": "Orchestrator"
+            },
+            "correlation_id": "corr-001",
+            "causation_id": "cmd-006"
+          }
+        }
+      ]
+    }
+  ],
+  "invariants_verified": [
+    "VersionMonotonicity",
+    "ExpectedVersionSafety",
+    "IntentBeforeObservation",
+    "EvidenceProvenance",
+    "ObligationProvenance",
+    "CompletionSoundness",
+    "TerminalTrapping",
+    "SingleTerminalOutcome",
+    "DeterministicDecision"
+  ],
+  "notes": "Complete happy path from contract lock to task completion. All required obligations satisfied. Final status is Completed (terminal state)."
+}

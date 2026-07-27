@@ -1,0 +1,96 @@
+{
+  "fixture_id": "duplicate_effect_intent_conflicting",
+  "fixture_version": "1.0.0",
+  "title": "Conflicting Effect: Same ID With Different Digest",
+  "description": "Tests that committing an effect_id with a different request_digest is rejected (CONFLICTING_EFFECT_ID)",
+  "scenario": "conflict",
+  "initial_state": {
+    "task_id": "task-004",
+    "version": 3,
+    "status": "Active",
+    "contract": {
+      "contract_id": "contract-ghi",
+      "contract_version": 1,
+      "contract_digest": "sha256-contract-ghi"
+    }
+  },
+  "commands": [
+    {
+      "command_id": "cmd-conflict-001",
+      "task_id": "task-004",
+      "expected_version": 3,
+      "authority": {
+        "principal_id": "bridge-adapter-01",
+        "role": "BridgeAdapter"
+      },
+      "correlation_id": "corr-004",
+      "causation_id": null,
+      "issued_at": "2026-07-26T13:00:00Z",
+      "body": {
+        "command_type": "CommitEffectIntent",
+        "attempt_id": "attempt-4",
+        "effect_id": "effect-4",
+        "effect_kind": "spawn_worker",
+        "request_digest": "sha256-request-version-1"
+      }
+    },
+    {
+      "command_id": "cmd-conflict-002",
+      "task_id": "task-004",
+      "expected_version": 4,
+      "authority": {
+        "principal_id": "bridge-adapter-01",
+        "role": "BridgeAdapter"
+      },
+      "correlation_id": "corr-004",
+      "causation_id": "cmd-conflict-001",
+      "issued_at": "2026-07-26T13:00:01Z",
+      "body": {
+        "command_type": "CommitEffectIntent",
+        "attempt_id": "attempt-4",
+        "effect_id": "effect-4",
+        "effect_kind": "spawn_worker",
+        "request_digest": "sha256-request-version-2"
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 3,
+          "domain_event": {
+            "event_type": "EffectIntentCommitted",
+            "payload": {
+              "attempt_id": "attempt-4",
+              "effect_id": "effect-4",
+              "effect_kind": "spawn_worker",
+              "request_digest": "sha256-request-version-1"
+            }
+          },
+          "origin": {
+            "command_id": "cmd-conflict-001",
+            "command_fingerprint": "sha256-cmd-conflict-001-body",
+            "authority": {
+              "principal_id": "bridge-adapter-01",
+              "role": "BridgeAdapter"
+            },
+            "correlation_id": "corr-004",
+            "causation_id": null
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "Rejected",
+      "reason_code": "CONFLICTING_EFFECT_ID",
+      "message": "Effect ID 'effect-4' already exists with different request_digest (sha256-request-version-1 vs sha256-request-version-2). Cannot redefine effect."
+    }
+  ],
+  "invariants_verified": [
+    "StableEffectIdentity",
+    "ExpectedVersionSafety"
+  ],
+  "notes": "Once an effect_id is committed with a specific request_digest, attempting to commit the same effect_id with a different digest is an error. This prevents accidental redefinition of effects."
+}

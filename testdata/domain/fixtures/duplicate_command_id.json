@@ -1,0 +1,90 @@
+{
+  "fixture_id": "duplicate_command_id",
+  "fixture_version": "1.0.0",
+  "title": "Idempotent Replay: Same CommandID Returns Same Decision",
+  "description": "Tests that identical command replay (same command_id + fingerprint) returns the same decision without modifying state",
+  "scenario": "idempotency",
+  "initial_state": {
+    "task_id": "task-003",
+    "version": 1,
+    "status": "Active",
+    "contract": {
+      "contract_id": "contract-def",
+      "contract_version": 1,
+      "contract_digest": "sha256-contract-def"
+    }
+  },
+  "commands": [
+    {
+      "command_id": "cmd-dup-001",
+      "task_id": "task-003",
+      "expected_version": 1,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-003",
+      "causation_id": null,
+      "issued_at": "2026-07-26T12:00:00Z",
+      "body": {
+        "command_type": "CreateAttempt",
+        "attempt_id": "attempt-3",
+        "ordinal": 1
+      }
+    },
+    {
+      "command_id": "cmd-dup-001",
+      "task_id": "task-003",
+      "expected_version": 2,
+      "authority": {
+        "principal_id": "homebase-orch-01",
+        "role": "Orchestrator"
+      },
+      "correlation_id": "corr-003",
+      "causation_id": null,
+      "issued_at": "2026-07-26T12:00:00Z",
+      "body": {
+        "command_type": "CreateAttempt",
+        "attempt_id": "attempt-3",
+        "ordinal": 1
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "decision_type": "Accepted",
+      "events": [
+        {
+          "aggregate_version": 1,
+          "domain_event": {
+            "event_type": "AttemptCreated",
+            "payload": {
+              "attempt_id": "attempt-3",
+              "ordinal": 1
+            }
+          },
+          "origin": {
+            "command_id": "cmd-dup-001",
+            "command_fingerprint": "sha256-cmd-dup-001-body",
+            "authority": {
+              "principal_id": "homebase-orch-01",
+              "role": "Orchestrator"
+            },
+            "correlation_id": "corr-003",
+            "causation_id": null
+          }
+        }
+      ]
+    },
+    {
+      "decision_type": "NoOp",
+      "reason_code": "COMMAND_ALREADY_APPLIED",
+      "message": "Identical command (cmd-dup-001 with same fingerprint) was already processed. Returning same decision."
+    }
+  ],
+  "invariants_verified": [
+    "DeterministicDecision",
+    "VersionMonotonicity"
+  ],
+  "notes": "Replay of the same command (identical command_id and fingerprint) returns NoOp(COMMAND_ALREADY_APPLIED), not a re-execution. This prevents duplicate events from being appended to the ledger. The original Accepted decision and its events are discovered by inspecting the ledger's event origins. Note: expected_version for the replay is 2, and since NoOp does not change state, state.version remains 2."
+}
