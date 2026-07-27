@@ -1,0 +1,19 @@
+evidence:
+  id: EVD-M5-RETRY-EXHAUST-005
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-003
+  test:
+    name: TestEffect_RetryExhaustion
+    command: go test -run TestEffect_RetryExhaustion
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-exhaust
+  assertions:
+    final_state: 0
+    max_retries_respected: true

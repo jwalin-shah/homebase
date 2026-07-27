@@ -1,0 +1,32 @@
+id: HB-JOURNAL-001
+status: ENFORCED
+statement: >
+  The ledger provides an append-only, monotonic sequence of events that 
+  durably survives crashes (fsync) and reconstructs deterministic domain state.
+feature: durable-journal
+boundaries:
+  - filesystem boundary (fsync)
+  - application service boundary
+hazards:
+  partial_write:
+    applicable: true
+    behavior: detected and ignored on replay via checksums
+    evidence: tests/corruption_detection
+  out_of_order_append:
+    applicable: true
+    prevention: monotonic sequence enforcement
+    evidence: tests/monotonic_sequence
+  silent_rewrite:
+    applicable: true
+    prevention: append-only file modes and immutability checks
+    evidence: tests/no_rewrite
+  process_crash_during_append:
+    applicable: true
+    recovery: replay from last valid synced boundary
+    evidence: tests/crash_recovery
+assumptions:
+  - statement: The underlying OS accurately honors fsync() barriers.
+    enforcement:
+      compile_time: none
+      test_time: tests/simulated_power_loss
+      runtime: monitors/io_latency

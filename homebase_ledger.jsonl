@@ -1,0 +1,1 @@
+{"decision":"Deploy updated security rules to Bridge sandbox","evidence":"Tests passed in CI with 100% coverage","id":"DECISION-001","recorded_at":"2026-07-26T18:33:53.20484-07:00","recorded_by":"autonomous-bridge-agent","signature":"b72af4e9aa881b083414aa8f22d2f52bbc0fce1adb77a70ef6fa7af504b31b76d55ee43fb9171677c5edfb61a67ca4621248ea47a1af580be330cd9fd9fcbb06"}

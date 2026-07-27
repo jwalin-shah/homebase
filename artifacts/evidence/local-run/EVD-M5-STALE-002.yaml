@@ -1,0 +1,19 @@
+evidence:
+  id: EVD-M5-STALE-002
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-001
+  test:
+    name: TestEffect_LateStaleObservation
+    command: go test -run TestEffect_LateStaleObservation
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-stale-obs
+  assertions:
+    stale_rejected: true
+    ownership_unchanged: true

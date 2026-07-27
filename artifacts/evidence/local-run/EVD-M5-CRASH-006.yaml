@@ -1,0 +1,21 @@
+evidence:
+  id: EVD-M5-CRASH-006
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-001
+    - CLM-M5-004
+  test:
+    name: TestEffect_CrashBeforeExecution
+    command: go test -run TestEffect_CrashBeforeExecution
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-crash-before
+  assertions:
+    remote_application_count: 1
+    execution_attempt_count: 1
+    idempotency_key_reused: false

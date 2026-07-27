@@ -1,0 +1,88 @@
+#!/bin/bash
+# Phase gate enforcement (local, run before push)
+# Checks if current phase can advance to next
+#
+# Usage: ./.githooks/phase-gate-local [--strict]
+# --strict: fail if any signature missing (default: warn only)
+
+set -e
+
+STRICT=${1:-""}
+TICKET=$(git branch --show-current | grep -o "TICKET-[0-9]*" | head -1)
+
+if [ -z "$TICKET" ]; then
+  echo "⚠️  WARNING: Not on a ticket branch (TICKET-XXX)"
+  echo "   Branch name should be: TICKET-202-phase-1-bridge-integration"
+  exit 0
+fi
+
+echo "🔍 Checking phase gate for $TICKET..."
+
+# Find phase sign-off sheet for this ticket
+SIGN_OFF="tickets/PHASE-SIGN-OFF-SHEET.md"
+
+if [ ! -f "$SIGN_OFF" ]; then
+  echo "❌ FAIL: $SIGN_OFF not found"
+  echo "   Must create sign-off sheet before phase work"
+  exit 1
+fi
+
+# Extract current phase from branch name or file
+CURRENT_PHASE=$(grep "$TICKET" "$SIGN_OFF" 2>/dev/null | grep -o "Phase [0-9]" | tail -1)
+
+if [ -z "$CURRENT_PHASE" ]; then
+  echo "⚠️  WARNING: Phase not found in sign-off sheet"
+  exit 0
+fi
+
+PHASE_NUM=${CURRENT_PHASE#Phase }
+PRIOR_PHASE=$((PHASE_NUM - 1))
+
+echo "  Current: $CURRENT_PHASE"
+
+# Check if prior phase is complete
+if [ $PRIOR_PHASE -gt 0 ]; then
+  echo "  Checking: Phase $PRIOR_PHASE complete?"
+
+  PRIOR_SIGNED=$(grep "$TICKET" "$SIGN_OFF" 2>/dev/null | grep "Phase $PRIOR_PHASE" | grep -c "✓" || echo 0)
+  PRIOR_NEEDED=5
+
+  echo "    Signatures: $PRIOR_SIGNED/$PRIOR_NEEDED"
+
+  if [ $PRIOR_SIGNED -lt $PRIOR_NEEDED ]; then
+    if [ "$STRICT" = "--strict" ]; then
+      echo "❌ FAIL: Phase $PRIOR_PHASE incomplete ($PRIOR_SIGNED/$PRIOR_NEEDED signatures)"
+      echo "   Cannot push to Phase $PHASE_NUM without prior phase complete"
+      exit 1
+    else
+      echo "⚠️  WARNING: Phase $PRIOR_PHASE not fully signed"
+      echo "   This will be rejected by phase gate on push"
+      echo "   Get remaining signatures or use --strict to fail now"
+    fi
+  else
+    echo "  ✓ Phase $PRIOR_PHASE complete"
+  fi
+fi
+
+# Check Phase 4: Audit findings
+if [ "$PHASE_NUM" -eq 5 ]; then
+  echo "  Checking: Phase 4 audit findings resolved?"
+
+  FINDINGS=$(ls tickets/AUDIT-FINDINGS-$TICKET-*.md 2>/dev/null | wc -l)
+
+  if [ $FINDINGS -gt 0 ]; then
+    UNFIXED=$(grep -h "Status:" tickets/AUDIT-FINDINGS-$TICKET-*.md 2>/dev/null | grep -c "UNFIXED\|PENDING" || echo 0)
+    CRITICAL=$(grep -h "Severity: CRITICAL" tickets/AUDIT-FINDINGS-$TICKET-*.md 2>/dev/null | grep -c "Status: FIXED" -v || echo 0)
+
+    echo "    Findings: $FINDINGS total, $UNFIXED unfixed, $CRITICAL critical"
+
+    if [ $CRITICAL -gt 0 ]; then
+      echo "❌ FAIL: $CRITICAL CRITICAL findings still unfixed"
+      echo "   Cannot deploy (Phase 5) with critical issues"
+      exit 1
+    fi
+  fi
+fi
+
+echo "✓ Phase gate check passed"
+exit 0

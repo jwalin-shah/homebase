@@ -1,0 +1,18 @@
+evidence:
+  id: EVD-M5-DUP-003
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-001
+  test:
+    name: TestEffect_DuplicateObservation
+    command: go test -run TestEffect_DuplicateObservation
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-dup-obs
+  assertions:
+    handled: true

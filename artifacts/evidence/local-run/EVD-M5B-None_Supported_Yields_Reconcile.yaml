@@ -1,0 +1,22 @@
+evidence:
+  id: EVD-M5B-None_Supported_Yields_Reconcile
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5B-001
+    - CLM-M5B-002
+    - CLM-M5B-003
+    - CLM-M5B-004
+  test:
+    name: TestEffect_UnknownOutcomeRouting/None_Supported_Yields_Reconcile
+    command: go test -run TestEffect_UnknownOutcomeRouting/None_Supported_Yields_Reconcile
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    capabilities: {0 2 0 1 1}
+  assertions:
+    expected_phase: 6
+    event_type_matched: true

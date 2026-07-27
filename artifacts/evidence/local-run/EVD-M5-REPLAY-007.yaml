@@ -1,0 +1,18 @@
+evidence:
+  id: EVD-M5-REPLAY-007
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-001
+  test:
+    name: TestEffect_RestartReplay
+    command: go test -run TestEffect_RestartReplay
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-replay
+  assertions:
+    replay_equal: true

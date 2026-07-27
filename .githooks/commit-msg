@@ -1,0 +1,62 @@
+#!/bin/bash
+# Commit-msg hook: Validates commit message format
+# Enforces phase sign-off requirements
+#
+# Install: ln -sf ../../.githooks/commit-msg .git/hooks/commit-msg
+# Bypass: git commit --no-verify (discouraged, logged)
+
+set -e
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+echo "🔍 Validating commit message..."
+
+# Rule 1: Commit must reference a ticket
+if ! echo "$COMMIT_MSG" | grep -q "TICKET-[0-9]\|Phase [0-9]"; then
+  echo "❌ FAIL: Commit message must reference TICKET-XXX or Phase N"
+  echo ""
+  echo "Format:"
+  echo "  TICKET-202: Description of change (Phase 1)"
+  echo "  "
+  echo "  More detail here..."
+  exit 1
+fi
+
+# Rule 2: If message says "Phase X complete", require sign-off line
+if echo "$COMMIT_MSG" | grep -q "Phase.*complete\|Sign.*off"; then
+  if ! echo "$COMMIT_MSG" | grep -q "Sign-off:"; then
+    echo "⚠️  Phase completion claimed but no Sign-off line"
+    echo "   Add to commit message:"
+    echo "   Sign-off: Your Name <email@example.com> [ROLE]"
+    echo ""
+    echo "   Roles: Discovery Lead | Architect | Implementation | Tester | Auditor"
+  fi
+fi
+
+# Rule 3: Warn if committing while phase gate might fail
+CURRENT_PHASE=$(grep -o "Phase [0-9]" tickets/PHASE-SIGN-OFF-SHEET.md | tail -1 2>/dev/null || echo "Phase 0")
+PHASE_NUM=${CURRENT_PHASE#Phase }
+
+if [ $PHASE_NUM -gt 0 ]; then
+  PRIOR_PHASE=$((PHASE_NUM - 1))
+  PRIOR_SIGNED=$(grep -c "Phase $PRIOR_PHASE.*✓" tickets/PHASE-SIGN-OFF-SHEET.md 2>/dev/null || echo 0)
+
+  if [ $PRIOR_SIGNED -lt 5 ]; then
+    echo "⚠️  WARNING: Phase $PRIOR_PHASE not fully signed ($PRIOR_SIGNED/5)"
+    echo "   This commit may be rejected at phase gate"
+    echo "   Ensure all 5 roles have signed before advancing"
+  fi
+fi
+
+# Rule 4: Check if Phase 4 findings are being addressed
+if echo "$COMMIT_MSG" | grep -q "AUDIT-FINDINGS\|Fix.*issue"; then
+  FINDINGS=$(ls tickets/AUDIT-FINDINGS-*.md 2>/dev/null | wc -l)
+  if [ $FINDINGS -gt 0 ]; then
+    echo "ℹ️  INFO: Committing fixes to audit findings"
+    echo "   Make sure to mark findings as 'Status: FIXED' in AUDIT-FINDINGS-*.md"
+  fi
+fi
+
+echo "✓ Commit message validated"
+exit 0

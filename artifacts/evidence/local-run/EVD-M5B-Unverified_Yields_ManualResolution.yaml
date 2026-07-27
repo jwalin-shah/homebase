@@ -1,0 +1,22 @@
+evidence:
+  id: EVD-M5B-Unverified_Yields_ManualResolution
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5B-001
+    - CLM-M5B-002
+    - CLM-M5B-003
+    - CLM-M5B-004
+  test:
+    name: TestEffect_UnknownOutcomeRouting/Unverified_Yields_ManualResolution
+    command: go test -run TestEffect_UnknownOutcomeRouting/Unverified_Yields_ManualResolution
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    capabilities: {1 2 0 1 0}
+  assertions:
+    expected_phase: 7
+    event_type_matched: true

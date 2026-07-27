@@ -5,82 +5,67 @@ import HomeBase.Domain
 
 namespace HomeBase
 
--- Valid State Predicate (Strengthened with Full Provenance)
-def ValidState (state : TaskState) : Prop :=
-  -- Contract consistency: Draft has no contract; Active/Completed/Escalated have contract
+-- Modular Invariants (Verdi-style Architecture)
+
+-- 1. Contract Consistency
+def ValidContractState (state : TaskState) : Prop :=
   (state.status = TaskStatus.Draft → state.contract.isNone) ∧
   (state.contract.isSome →
     (state.status = TaskStatus.Active ∨ state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated)) ∧
+  ((state.attempts.length > 0 → state.contract.isSome) ∧
+   (match state.contract with
+    | none => true
+    | some c => state.attempts.length ≤ c.max_attempts
+    end))
 
-  -- Draft status: no attempts or active_attempt
+-- 2. Attempt Integrity
+def ValidAttemptState (state : TaskState) : Prop :=
   (state.status = TaskStatus.Draft →
    state.attempts.isEmpty ∧ state.active_attempt.isNone) ∧
-
-  -- Attempt consistency: active_attempt must reference an open attempt
   (match state.active_attempt with
    | none => true
    | some aid =>
      lookup aid state.attempts |>.map (fun a => a.status = AttemptStatus.Open) |>.getD false
    ) ∧
-
-  -- No duplicate attempt IDs
   state.attempts.Nodup (fun (a1, _) (a2, _) => a1 = a2) ∧
+  state.command_receipts.Nodup (fun (c1, _) (c2, _) => c1 = c2)
 
-  -- No duplicate command IDs (command receipt uniqueness - blocker 9)
-  state.command_receipts.Nodup (fun (c1, _) (c2, _) => c1 = c2) ∧
-
-  -- Full provenance chain: Observation → Intent → Attempt → Contract
-  -- All effect intents reference existing attempts (owned by contract)
+-- 3. Provenance Chain
+def ValidProvenanceState (state : TaskState) : Prop :=
   (∀ eid intent, lookup eid state.effect_intents = some intent →
     (lookup intent.attempt_id state.attempts |>.isSome ∧
      state.contract.isSome)) ∧
-
-  -- Bidirectional effect ownership: effect_ids and effect_intents must agree
-  -- Forward: each eid in attempt.effect_ids references that attempt
   (∀ attempt, lookup attempt.attempt_id state.attempts = some attempt →
     ∀ eid, eid ∈ attempt.effect_ids →
     ∃ intent, lookup eid state.effect_intents = some intent ∧
               intent.attempt_id = attempt.attempt_id) ∧
-
-  -- Reverse: each effect intent's attempt_id appears in that attempt's effect_ids
   (∀ eid intent, lookup eid state.effect_intents = some intent →
     ∃ attempt, lookup intent.attempt_id state.attempts = some attempt ∧
                eid ∈ attempt.effect_ids) ∧
-
-  -- All observations reference existing intents with matching attempt_id
   (∀ oid obs, lookup oid state.observations = some obs →
     ∃ intent, lookup obs.effect_id state.effect_intents = some intent ∧
               intent.attempt_id = obs.attempt_id ∧
-              lookup intent.attempt_id state.attempts |>.isSome) ∧
+              lookup intent.attempt_id state.attempts |>.isSome)
 
-  -- All accepted evidence references existing observations with succeeded outcome and matching attempt
+-- 4. Evidence Soundness
+def ValidEvidenceState (state : TaskState) : Prop :=
   (∀ evid ev, lookup evid state.accepted_evidence = some ev →
     ∃ obs, lookup ev.source_observation_id state.observations = some obs ∧
            obs.outcome = ObservationOutcome.Succeeded ∧
            ev.attempt_id = obs.attempt_id ∧
            (lookup obs.effect_id state.effect_intents).isSome) ∧
-
-  -- All satisfied obligations are required by contract and evidence exists
   (∀ obid obs, lookup obid state.satisfied_obligations = some obs →
     (match state.contract with
      | none => false
      | some c => obid ∈ c.required_obligations ∧
                  obs.evidence_ids.all fun evid =>
                    (lookup evid state.accepted_evidence).isSome
-     end)) ∧
+     end))
 
-  -- Attempt count <= max_attempts (contract must exist if attempts exist)
-  ((state.attempts.length > 0 → state.contract.isSome) ∧
-   (match state.contract with
-    | none => true
-    | some c => state.attempts.length ≤ c.max_attempts
-    end)) ∧
-
-  -- Terminal state consistency: no active attempt in terminal states
+-- 5. Terminal Trapping
+def ValidTerminalState (state : TaskState) : Prop :=
   ((state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated) →
    state.active_attempt = none) ∧
-
-  -- Completed requires all obligations satisfied
   (state.status = TaskStatus.Completed →
    match state.contract with
    | none => false
@@ -88,8 +73,6 @@ def ValidState (state : TaskState) : Prop :=
      ∀ obid, obid ∈ c.required_obligations →
      (lookup obid state.satisfied_obligations).isSome
    end) ∧
-
-  -- Escalated requires escalation data and related effect exists if referenced
   (state.status = TaskStatus.Escalated →
    state.escalation.isSome ∧
    (match state.escalation with
@@ -100,6 +83,14 @@ def ValidState (state : TaskState) : Prop :=
       | some eid => (lookup eid state.effect_intents).isSome
       end
     end))
+
+-- Valid State Predicate (Composed)
+def ValidState (state : TaskState) : Prop :=
+  ValidContractState state ∧
+  ValidAttemptState state ∧
+  ValidProvenanceState state ∧
+  ValidEvidenceState state ∧
+  ValidTerminalState state
 
 -- Apply a single domain event to state
 def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
@@ -354,6 +345,27 @@ def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
     else
       none
 
+  | DomainEvent.EscalationApproved =>
+    if state.status = TaskStatus.Escalated then
+      some {
+        state with
+        version := state.version + 1
+        status := TaskStatus.Active
+        escalation := none
+      }
+    else
+      none
+
+  | DomainEvent.EscalationRejected =>
+    if state.status = TaskStatus.Escalated then
+      some {
+        state with
+        version := state.version + 1
+        status := TaskStatus.Completed
+      }
+    else
+      none
+
 -- Fold events into state
 def foldEvents (state : TaskState) (events : List DomainEvent) : Option TaskState :=
   events.foldl (fun accum event =>
@@ -380,6 +392,8 @@ def recordCommand (state : TaskState) (cmd : CommandEnvelope)
       | DomainEvent.AttemptConcluded _ _ => "AttemptConcluded"
       | DomainEvent.TaskCompleted => "TaskCompleted"
       | DomainEvent.EscalationRequested _ _ _ => "EscalationRequested"
+      | DomainEvent.EscalationApproved => "EscalationApproved"
+      | DomainEvent.EscalationRejected => "EscalationRejected"
     let receipt : CommandReceipt := {
       command_fingerprint := cmd.command_fingerprint
       resulting_event_types := event_type_strs
@@ -424,9 +438,9 @@ theorem applyEvent_det (state : TaskState) (event : DomainEvent) (s1 s2 : TaskSt
   rw [h1] at h2
   injection h2
 
--- Terminal trapping: terminal states reject mutations
-theorem terminal_trapping (state : TaskState) (event : DomainEvent) :
-    (state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated) →
+-- Completed trapping: completed states reject mutations
+theorem completed_trapping (state : TaskState) (event : DomainEvent) :
+    state.status = TaskStatus.Completed →
     applyEvent state event = none := by
   intro h
   simp [applyEvent]

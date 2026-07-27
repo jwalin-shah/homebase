@@ -142,55 +142,55 @@ theorem accepted_preserves_valid (state : TaskState) (cmd : CommandEnvelope)
   | CommandBody.LockContract _ _ _ _ _ _ =>
     -- After ContractLocked event: contract is set, status is Active
     -- ValidState holds: contract implies Active, others unchanged
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.CreateAttempt aid ordinal =>
     -- After AttemptCreated: attempt added, active_attempt set
     -- ValidState holds: attempt exists and is Open
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.CommitEffectIntent aid eid kind digest =>
     -- After EffectIntentCommitted: intent added to attempt
     -- ValidState holds: intent references existing attempt
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.RecordEffectObservation oid aid eid outcome result =>
     -- After EffectObserved: observation added, intent status may advance
     -- ValidState holds: observation references existing intent
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.AcceptEvidence evid aid src_oid digest =>
     -- After EvidenceAccepted: evidence added
     -- ValidState holds: evidence references successful observation
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.SatisfyObligation obid evidence_ids =>
     -- After ObligationSatisfied: obligation marked satisfied
     -- ValidState holds: obligation is required, evidence exists
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.ConcludeAttempt aid =>
     -- After AttemptConcluded: active_attempt cleared
     -- ValidState holds: no active attempt in Terminal (but not terminal yet)
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.ProposeCompletion =>
     -- After TaskCompleted: status=Completed, active_attempt=none
     -- ValidState holds: all required obligations satisfied
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
   | CommandBody.RequestEscalation _ _ _ =>
     -- After EscalationRequested: status=Escalated, escalation data set
     -- ValidState holds: Escalated requires escalation data
-    simp [foldEvents, applyEvent, ValidState] at h_fold
+    simp [foldEvents, applyEvent, ValidState, ValidContractState, ValidAttemptState, ValidProvenanceState, ValidEvidenceState, ValidTerminalState] at h_fold
     split_ifs at h_fold <|> omega
 
 -- Command Receipt Atomicity (CRITICAL FIX #3)

@@ -1,0 +1,6 @@
+[package]
+name = "homebase"
+version = "0.1.0"
+description = "HomeBase: formally verified decision governance kernel"
+authors = ["jwalin-shah"]
+homepage = "https://github.com/jwalin-shah/homebase"

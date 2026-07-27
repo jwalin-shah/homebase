@@ -1,5 +1,8 @@
 evidence:
   id: EVD-M5-CRASH-003
+  status: candidate
+  producer: test_harness
+  verified_by: null
   claim_ids:
     - CLM-M5-001
     - CLM-M5-002
@@ -10,10 +13,19 @@ evidence:
     exit_code: 0
   environment:
     dafny_version: 4.11.0
+    go_version: 1.22.0
   inputs:
     effect_id: eff-123
     failure_point: after_remote_apply_before_journal_append
   assertions:
     remote_application_count: 1
-    final_effect_state: Succeeded
     idempotency_key_reused: true
+    second_observation: 0
+    first_claim_epoch: 1
+    second_claim_epoch: 2
+    stale_epoch_finalization_rejected: true
+    execution_attempt_count: 2
+    first_observation: 3
+    final_effect_state: Succeeded
+    journal_replay_equal: true
+    retry_bound_respected: true

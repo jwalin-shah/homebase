@@ -12,26 +12,29 @@ dafny translate go verification/dafny/EffectReducer.dfy || true
 
 # Check if the output directory was created
 if [ ! -d "verification/dafny/Reducer-go/src/Reducer" ]; then
-    echo "Dafny translation failed to generate the Go files."
+    echo "Error: Reducer-go generation failed."
+    exit 1
+fi
+if [ ! -d "verification/dafny/EffectReducer-go/src/EffectReducer" ]; then
+    echo "Error: EffectReducer-go generation failed."
     exit 1
 fi
 
 # Copy to the internal package
 echo "Copying generated code to internal/dafny_reducer..."
 mkdir -p internal/dafny_reducer
+mkdir -p internal/dafny_effect_reducer
 cp verification/dafny/Reducer-go/src/Reducer/Reducer.go internal/dafny_reducer/Reducer.go
-if [ -d "verification/dafny/EffectReducer-go/src/EffectReducer" ]; then
-    cp verification/dafny/EffectReducer-go/src/EffectReducer/EffectReducer.go internal/dafny_reducer/EffectReducer.go
-fi
+cp verification/dafny/EffectReducer-go/src/EffectReducer/EffectReducer.go internal/dafny_effect_reducer/EffectReducer.go
 
-# Fix import paths
+# Fix import paths and package names
 echo "Fixing Dafny runtime import paths..."
+sed -i '' 's|^package Reducer|package dafny_reducer|g' internal/dafny_reducer/Reducer.go
 sed -i '' 's|"dafny"|"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"|g' internal/dafny_reducer/Reducer.go
 sed -i '' 's|"System_"|"github.com/dafny-lang/DafnyRuntimeGo/v4/System_"|g' internal/dafny_reducer/Reducer.go
-if [ -f "internal/dafny_reducer/EffectReducer.go" ]; then
-    sed -i '' 's|"dafny"|"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"|g' internal/dafny_reducer/EffectReducer.go
-    sed -i '' 's|"System_"|"github.com/dafny-lang/DafnyRuntimeGo/v4/System_"|g' internal/dafny_reducer/EffectReducer.go
-fi
+sed -i '' 's|^package EffectReducer|package dafny_effect_reducer|g' internal/dafny_effect_reducer/EffectReducer.go
+sed -i '' 's|"dafny"|"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"|g' internal/dafny_effect_reducer/EffectReducer.go
+sed -i '' 's|"System_"|"github.com/dafny-lang/DafnyRuntimeGo/v4/System_"|g' internal/dafny_effect_reducer/EffectReducer.go
 
 # Cleanup
 rm -rf verification/dafny/Reducer-go

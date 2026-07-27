@@ -1,0 +1,18 @@
+evidence:
+  id: EVD-M5-UNKNOWN-004
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-004
+  test:
+    name: TestEffect_UnknownOutcome
+    command: go test -run TestEffect_UnknownOutcome
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-unknown
+  assertions:
+    final_state: OutcomeUnknown

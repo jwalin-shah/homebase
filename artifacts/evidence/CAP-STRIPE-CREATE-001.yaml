@@ -1,0 +1,17 @@
+capability_claim:
+  id: CAP-STRIPE-CREATE-001
+  adapter: stripe
+  operation: create_payment_intent
+  capability: stable_key_idempotency
+  status: proposed
+  evidence:
+    - type: official_documentation
+      source: https://docs.stripe.com/api/idempotent_requests
+    - type: contract_test
+      artifact: null # To be filled when integration test is executed
+
+  descriptor:
+    idempotency: StableKeyWithConflictDetection
+    resultLookup: ByIdempotencyKey
+    transactionality: SingleOperation
+    unknownOutcome: CanReconcile

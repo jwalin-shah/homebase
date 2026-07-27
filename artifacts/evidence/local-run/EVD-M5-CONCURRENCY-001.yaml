@@ -1,0 +1,22 @@
+evidence:
+  id: EVD-M5-CONCURRENCY-001
+  status: candidate
+  producer: test_harness
+  verified_by: null
+  claim_ids:
+    - CLM-M5-002
+  test:
+    name: TestEffect_ExclusiveClaim
+    command: go test -run TestEffect_ExclusiveClaim
+    exit_code: 0
+  environment:
+    dafny_version: 4.11.0
+    go_version: 1.22.0
+  inputs:
+    effect_id: eff-concurrency-1
+    workers: 2
+  assertions:
+    accepted_count: 1
+    rejected_count: 1
+    final_state: Claimed
+    journal_version_increment: 1

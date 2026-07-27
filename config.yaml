@@ -1,0 +1,30 @@
+# HomeBase Global Configuration
+# This file mathematically bounds the engine's behavior without requiring code changes.
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+ledger:
+  # The physical path where the fsync JSONL ledger is stored
+  path: "/var/lib/homebase/homebase_ledger.jsonl"
+  
+  # How many decisions the system is allowed to hold in RAM before forcing a flush
+  flush_batch_size: 1
+
+graph_engine:
+  # INVARIANT ENFORCEMENT: The absolute maximum number of times the system can 
+  # attempt to recover from a failure before forcing an ESCALATION to a human.
+  max_recovery_attempts: 2
+
+neo4j_firewall:
+  # Replaces the hardcoded 5-second assumption. 
+  # This is tied to AX-SAIP-010 (Performance Axioms). 
+  # If a semantic code graph query exceeds this, it is violently terminated.
+  query_timeout_ms: 7000
+  uri: "bolt://localhost:7687"
+
+cryptography:
+  # The path to the secure enclave holding the Ed25519 private key.
+  # Orbit and Bridge must NEVER have access to this directory.
+  key_vault_path: "/etc/homebase/secrets/ed25519.pem"

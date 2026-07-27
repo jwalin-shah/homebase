@@ -295,6 +295,12 @@ inductive DomainEvent where
       related_effect_id : Option EffectID →
       DomainEvent
 
+  | EscalationApproved :
+      DomainEvent
+
+  | EscalationRejected :
+      DomainEvent
+
   deriving DecidableEq
 
 -- Command Origin Metadata
@@ -368,6 +374,12 @@ inductive CommandBody where
       failure_class : FailureClass →
       reason : String →
       related_effect_id : Option EffectID →
+      CommandBody
+
+  | ApproveEscalation :
+      CommandBody
+
+  | RejectEscalation :
       CommandBody
 
   deriving DecidableEq
