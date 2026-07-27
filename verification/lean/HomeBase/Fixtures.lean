@@ -7,11 +7,11 @@ import HomeBase.Decision
 
 namespace HomeBase.Fixtures
 
--- Empty state for testing
+-- Empty state for testing (Draft = initial, no contract)
 def emptyState (task_id : TaskID) : TaskState := {
   task_id := task_id
   version := 0
-  status := TaskStatus.Active
+  status := TaskStatus.Draft
   contract := none
   attempts := []
   active_attempt := none
@@ -516,8 +516,8 @@ theorem fixture_escalation_invalid_effect_id :
     decide state cmd = Decision.Rejected RejectionReason.EFFECT_NOT_FOUND := by
   decide
 
--- Fixture 15: conclude_attempt (New command: Explicit attempt conclusion)
--- Tests that ConcludeAttempt requires all intents to be Terminal
+-- Fixture 15: conclude_attempt (New command: Explicit attempt conclusion with outcome)
+-- Tests that ConcludeAttempt requires all intents to be Terminal and outcome is explicit
 theorem fixture_conclude_attempt :
     let state : TaskState := {
       (emptyState taskId1) with
@@ -554,10 +554,136 @@ theorem fixture_conclude_attempt :
       authority := ⟨AuthorityID.mk "orch", AuthorityRole.Orchestrator⟩
       correlation_id := CorrelationID.mk "corr-conclude"
       causation_id := none
-      body := CommandBody.ConcludeAttempt attemptId1
+      body := CommandBody.ConcludeAttempt attemptId1 AttemptOutcome.Succeeded
     }
-    -- Concluding attempt clears active_attempt
-    decide state cmd = Decision.Accepted [DomainEvent.AttemptConcluded attemptId1] := by
+    -- Concluding attempt with explicit outcome clears active_attempt
+    decide state cmd = Decision.Accepted [DomainEvent.AttemptConcluded attemptId1 AttemptOutcome.Succeeded] := by
+  decide
+
+-- Fixture 16: valid_initial_state (Blocker 1: Initial Draft state is valid)
+-- Tests that Draft status with no contract is valid and reachable
+theorem fixture_valid_initial_state :
+    let state : TaskState := {
+      task_id := TaskID.mk "task-initial"
+      version := 0
+      status := TaskStatus.Draft
+      contract := none
+      attempts := []
+      active_attempt := none
+      effect_intents := []
+      observations := []
+      accepted_evidence := []
+      satisfied_obligations := []
+      command_receipts := []
+      escalation := none
+    }
+    let cmd : CommandEnvelope := {
+      command_id := CommandID.mk "cmd-lock-from-draft"
+      task_id := TaskID.mk "task-initial"
+      expected_version := 0
+      command_fingerprint := Hash.mk "fp-lock-draft"
+      authority := ⟨AuthorityID.mk "init", AuthorityRole.TaskInitiator⟩
+      correlation_id := CorrelationID.mk "corr-initial"
+      causation_id := none
+      body := CommandBody.LockContract (ContractID.mk "contract-initial")
+                 (ContractVersion.mk 1) {obligationId1} {effectKind} 1 (Hash.mk "sha256-initial")
+    }
+    -- ContractLocked must be reachable from Draft → Active transition
+    decide state cmd = Decision.Accepted [
+      DomainEvent.ContractLocked (ContractID.mk "contract-initial")
+        (ContractVersion.mk 1) {obligationId1} {effectKind} 1 (Hash.mk "sha256-initial")
+    ] := by
+  decide
+
+-- Fixture 17: conclude_non_active_attempt (Blocker 4: Can't conclude inactive attempt)
+-- Tests that ConcludeAttempt requires target to be active
+theorem fixture_conclude_non_active_attempt :
+    let state : TaskState := {
+      (emptyState taskId1) with
+      version := 3
+      status := TaskStatus.Active
+      active_attempt := some attemptId1
+      attempts := [
+        (attemptId3, {attempt_id := attemptId3, ordinal := 0, status := AttemptStatus.Succeeded, effect_ids := ∅}),
+        (attemptId1, {attempt_id := attemptId1, ordinal := 1, status := AttemptStatus.Open, effect_ids := ∅})
+      ]
+      contract := some {
+        contract_id := ContractID.mk "contract-adv-conclude"
+        contract_version := ContractVersion.mk 1
+        contract_digest := Hash.mk "sha256-adv-conclude"
+        required_obligations := {obligationId1}
+        allowed_effect_kinds := {effectKind}
+        max_attempts := 3
+      }
+    }
+    let cmd : CommandEnvelope := {
+      command_id := CommandID.mk "cmd-conclude-inactive"
+      task_id := taskId1
+      expected_version := 3
+      command_fingerprint := Hash.mk "fp-conclude-inactive"
+      authority := ⟨AuthorityID.mk "orch", AuthorityRole.Orchestrator⟩
+      correlation_id := CorrelationID.mk "corr-conclude-inactive"
+      causation_id := none
+      body := CommandBody.ConcludeAttempt attemptId3 AttemptOutcome.Succeeded
+    }
+    -- Cannot conclude inactive attempt attemptId3 when attemptId1 is active
+    decide state cmd = Decision.Rejected RejectionReason.ATTEMPT_NOT_ACTIVE := by
+  decide
+
+-- Fixture 18: conclude_with_omitted_nonterminal_effect (Blocker 5: Missing reverse index)
+-- Tests that ConcludeAttempt requires all effects in effect_intents to be terminal
+-- even if some are missing from attempt.effect_ids
+theorem fixture_conclude_with_omitted_nonterminal_effect :
+    let state : TaskState := {
+      (emptyState taskId1) with
+      version := 3
+      status := TaskStatus.Active
+      active_attempt := some attemptId1
+      attempts := [(attemptId1, {
+        attempt_id := attemptId1
+        ordinal := 1
+        status := AttemptStatus.Open
+        effect_ids := {effectId1}  -- Only includes effectId1, not effectId4
+      })]
+      contract := some {
+        contract_id := ContractID.mk "contract-omitted"
+        contract_version := ContractVersion.mk 1
+        contract_digest := Hash.mk "sha256-omitted"
+        required_obligations := {obligationId1}
+        allowed_effect_kinds := {effectKind}
+        max_attempts := 3
+      }
+      effect_intents := [
+        (effectId1, {
+          effect_id := effectId1
+          attempt_id := attemptId1
+          effect_kind := effectKind
+          request_digest := Hash.mk "sha256-req-1"
+          status := IntentStatus.Terminal
+        }),
+        (effectId4, {
+          effect_id := effectId4
+          attempt_id := attemptId1
+          effect_kind := effectKind
+          request_digest := Hash.mk "sha256-req-4"
+          status := IntentStatus.Committed  -- Still non-terminal!
+        })
+      ]
+    }
+    let cmd : CommandEnvelope := {
+      command_id := CommandID.mk "cmd-conclude-omitted"
+      task_id := taskId1
+      expected_version := 3
+      command_fingerprint := Hash.mk "fp-conclude-omitted"
+      authority := ⟨AuthorityID.mk "orch", AuthorityRole.Orchestrator⟩
+      correlation_id := CorrelationID.mk "corr-conclude-omitted"
+      causation_id := none
+      body := CommandBody.ConcludeAttempt attemptId1 AttemptOutcome.Succeeded
+    }
+    -- Fails because effectId4 is not terminal (but this is actually acceptable if
+    -- the invariant doesn't require bidirectional ownership)
+    -- With proper bidirectional invariant, this state would be invalid
+    decide state cmd = Decision.Rejected RejectionReason.INVALID_STATUS := by
   decide
 
 end HomeBase.Fixtures

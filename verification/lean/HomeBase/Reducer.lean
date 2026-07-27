@@ -7,9 +7,14 @@ namespace HomeBase
 
 -- Valid State Predicate (Strengthened with Full Provenance)
 def ValidState (state : TaskState) : Prop :=
-  -- Contract consistency: contract exists ↔ non-terminal status
-  (state.contract.isSome ↔
+  -- Contract consistency: Draft has no contract; Active/Completed/Escalated have contract
+  (state.status = TaskStatus.Draft → state.contract.isNone) ∧
+  (state.contract.isSome →
     (state.status = TaskStatus.Active ∨ state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated)) ∧
+
+  -- Draft status: no attempts or active_attempt
+  (state.status = TaskStatus.Draft →
+   state.attempts.isEmpty ∧ state.active_attempt.isNone) ∧
 
   -- Attempt consistency: active_attempt must reference an open attempt
   (match state.active_attempt with
@@ -21,11 +26,26 @@ def ValidState (state : TaskState) : Prop :=
   -- No duplicate attempt IDs
   state.attempts.Nodup (fun (a1, _) (a2, _) => a1 = a2) ∧
 
+  -- No duplicate command IDs (command receipt uniqueness - blocker 9)
+  state.command_receipts.Nodup (fun (c1, _) (c2, _) => c1 = c2) ∧
+
   -- Full provenance chain: Observation → Intent → Attempt → Contract
   -- All effect intents reference existing attempts (owned by contract)
   (∀ eid intent, lookup eid state.effect_intents = some intent →
     (lookup intent.attempt_id state.attempts |>.isSome ∧
      state.contract.isSome)) ∧
+
+  -- Bidirectional effect ownership: effect_ids and effect_intents must agree
+  -- Forward: each eid in attempt.effect_ids references that attempt
+  (∀ attempt, lookup attempt.attempt_id state.attempts = some attempt →
+    ∀ eid, eid ∈ attempt.effect_ids →
+    ∃ intent, lookup eid state.effect_intents = some intent ∧
+              intent.attempt_id = attempt.attempt_id) ∧
+
+  -- Reverse: each effect intent's attempt_id appears in that attempt's effect_ids
+  (∀ eid intent, lookup eid state.effect_intents = some intent →
+    ∃ attempt, lookup intent.attempt_id state.attempts = some attempt ∧
+               eid ∈ attempt.effect_ids) ∧
 
   -- All observations reference existing intents with matching attempt_id
   (∀ oid obs, lookup oid state.observations = some obs →
@@ -33,10 +53,11 @@ def ValidState (state : TaskState) : Prop :=
               intent.attempt_id = obs.attempt_id ∧
               lookup intent.attempt_id state.attempts |>.isSome) ∧
 
-  -- All accepted evidence references existing observations with succeeded outcome
+  -- All accepted evidence references existing observations with succeeded outcome and matching attempt
   (∀ evid ev, lookup evid state.accepted_evidence = some ev →
     ∃ obs, lookup ev.source_observation_id state.observations = some obs ∧
            obs.outcome = ObservationOutcome.Succeeded ∧
+           ev.attempt_id = obs.attempt_id ∧
            (lookup obs.effect_id state.effect_intents).isSome) ∧
 
   -- All satisfied obligations are required by contract and evidence exists
@@ -87,10 +108,11 @@ def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
   match event with
 
   | DomainEvent.ContractLocked cid cver obls efks max_att digest =>
-    if state.status = TaskStatus.Active ∧ state.contract = none ∧ max_att > 0 then
+    if state.status = TaskStatus.Draft ∧ state.contract = none ∧ max_att > 0 then
       some {
         state with
         version := state.version + 1
+        status := TaskStatus.Active
         contract := some {
           contract_id := cid
           contract_version := cver
@@ -251,21 +273,32 @@ def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
     else
       none
 
-  | DomainEvent.AttemptConcluded aid =>
+  | DomainEvent.AttemptConcluded aid outcome =>
     if state.status = TaskStatus.Active then
-      match lookup aid state.attempts with
-      | none => none
-      | some attempt =>
-        -- All effect intents must be Terminal before conclusion
-        let all_intents_terminal := attempt.effect_ids.all fun eid =>
-          (lookup eid state.effect_intents).map (fun intent => intent.status = IntentStatus.Terminal) |>.getD false
-        if ¬all_intents_terminal then none
-        else
-          some {
-            state with
-            version := state.version + 1
-            active_attempt := none
-          }
+      -- Must be concluding the active attempt (blocker 4)
+      if state.active_attempt ≠ some aid then none
+      else
+        match lookup aid state.attempts with
+        | none => none
+        | some attempt =>
+          -- All effect intents must be Terminal before conclusion
+          let all_intents_terminal := attempt.effect_ids.all fun eid =>
+            (lookup eid state.effect_intents).map (fun intent => intent.status = IntentStatus.Terminal) |>.getD false
+          if ¬all_intents_terminal then none
+          else
+            -- Map AttemptOutcome to AttemptStatus (blocker 2)
+            let new_status := match outcome with
+              | AttemptOutcome.Succeeded => AttemptStatus.Succeeded
+              | AttemptOutcome.Failed => AttemptStatus.Failed
+              | AttemptOutcome.OutcomeUnknown => AttemptStatus.OutcomeUnknown
+              | AttemptOutcome.Cancelled => AttemptStatus.Failed
+            let updated_attempt := { attempt with status := new_status }
+            some {
+              state with
+              version := state.version + 1
+              active_attempt := none
+              attempts := assocUpdate aid updated_attempt state.attempts
+            }
     else
       none
 
@@ -344,7 +377,7 @@ def recordCommand (state : TaskState) (cmd : CommandEnvelope)
       | DomainEvent.EffectObserved _ _ _ _ _ => "EffectObserved"
       | DomainEvent.EvidenceAccepted _ _ _ _ => "EvidenceAccepted"
       | DomainEvent.ObligationSatisfied _ _ => "ObligationSatisfied"
-      | DomainEvent.AttemptConcluded _ => "AttemptConcluded"
+      | DomainEvent.AttemptConcluded _ _ => "AttemptConcluded"
       | DomainEvent.TaskCompleted => "TaskCompleted"
       | DomainEvent.EscalationRequested _ _ _ => "EscalationRequested"
     let receipt : CommandReceipt := {

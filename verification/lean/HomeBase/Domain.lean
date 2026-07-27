@@ -68,9 +68,10 @@ structure CorrelationID where
 
 -- Enumerations
 inductive TaskStatus where
-  | Active
-  | Completed
-  | Escalated
+  | Draft        -- Initial state: no contract yet
+  | Active       -- Contract locked, executing attempts
+  | Completed    -- All obligations satisfied
+  | Escalated    -- Escalated to human decision
   deriving DecidableEq
 
 inductive AttemptStatus where
@@ -78,6 +79,14 @@ inductive AttemptStatus where
   | Succeeded
   | Failed
   | OutcomeUnknown
+  deriving DecidableEq
+
+-- Attempt conclusion outcome (explicit reason for conclusion)
+inductive AttemptOutcome where
+  | Succeeded       -- All effects succeeded
+  | Failed          -- One or more effects failed
+  | OutcomeUnknown  -- Outcome indeterminate
+  | Cancelled       -- Attempt cancelled/abandoned
   deriving DecidableEq
 
 inductive IntentStatus where
@@ -274,6 +283,7 @@ inductive DomainEvent where
 
   | AttemptConcluded :
       attempt_id : AttemptID →
+      outcome : AttemptOutcome →
       DomainEvent
 
   | TaskCompleted :
@@ -348,6 +358,7 @@ inductive CommandBody where
 
   | ConcludeAttempt :
       attempt_id : AttemptID →
+      outcome : AttemptOutcome →
       CommandBody
 
   | ProposeCompletion :

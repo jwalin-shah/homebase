@@ -16,7 +16,7 @@ def isAuthorized (authority : Authority) (body : CommandBody) : Bool :=
 
   -- Orchestrator: CreateAttempt, ConcludeAttempt, SatisfyObligation, ProposeCompletion, RequestEscalation
   | AuthorityRole.Orchestrator, CommandBody.CreateAttempt _ _ => true
-  | AuthorityRole.Orchestrator, CommandBody.ConcludeAttempt _ => true
+  | AuthorityRole.Orchestrator, CommandBody.ConcludeAttempt _ _ => true
   | AuthorityRole.Orchestrator, CommandBody.SatisfyObligation _ _ => true
   | AuthorityRole.Orchestrator, CommandBody.ProposeCompletion => true
   | AuthorityRole.Orchestrator, CommandBody.RequestEscalation _ _ _ => true
@@ -86,7 +86,9 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
   else match cmd.body with
 
   | CommandBody.LockContract cid cv obls efks max_att digest =>
-    if max_att = 0 then
+    if state.status ≠ TaskStatus.Draft then
+      Decision.Rejected RejectionReason.INVALID_STATUS
+    else if max_att = 0 then
       Decision.Rejected RejectionReason.INVALID_STATUS
     else
       match state.contract with
@@ -237,9 +239,12 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
               let event := DomainEvent.ObligationSatisfied obid evidence_ids
               Decision.Accepted [event]
 
-  | CommandBody.ConcludeAttempt aid =>
+  | CommandBody.ConcludeAttempt aid outcome =>
     if state.status ≠ TaskStatus.Active then
       Decision.Rejected RejectionReason.INVALID_STATUS
+    -- Must be concluding the active attempt (blocker 4)
+    else if state.active_attempt ≠ some aid then
+      Decision.Rejected RejectionReason.ATTEMPT_NOT_ACTIVE
     else
       match lookup aid state.attempts with
       | none =>
@@ -251,7 +256,7 @@ def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
         if ¬all_intents_terminal then
           Decision.Rejected RejectionReason.INVALID_STATUS
         else
-          let event := DomainEvent.AttemptConcluded aid
+          let event := DomainEvent.AttemptConcluded aid outcome
           Decision.Accepted [event]
 
   | CommandBody.ProposeCompletion =>
