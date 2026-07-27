@@ -2,35 +2,59 @@ package application
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"homebase/internal/domain"
 )
 
 // MockAttemptRepository is an explicitly non-durable in-memory repository for Milestone 1.
 type MockAttemptRepository struct {
-	mu    sync.Mutex
-	store map[string]domain.AttemptState
+	mu      sync.Mutex
+	states  map[domain.AttemptID]domain.AttemptState
+	version map[domain.AttemptID]uint64
 }
 
 func NewMockAttemptRepository() *MockAttemptRepository {
 	return &MockAttemptRepository{
-		store: make(map[string]domain.AttemptState),
+		states:  make(map[domain.AttemptID]domain.AttemptState),
+		version: make(map[domain.AttemptID]uint64),
 	}
 }
 
-func (r *MockAttemptRepository) Load(ctx context.Context, id domain.AttemptID) (domain.AttemptState, error) {
+var ErrVersionConflict = errors.New("version conflict")
+
+func (r *MockAttemptRepository) Load(ctx context.Context, id domain.AttemptID) (domain.AttemptState, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state, exists := r.store[id.String()]
-	if !exists {
-		return domain.AttemptState{ID: id}, nil
+	state, ok := r.states[id]
+	if !ok {
+		return domain.AttemptState{ID: id}, 0, nil
 	}
-	return state, nil
+	ver := r.version[id]
+	return state, ver, nil
 }
 
-func (r *MockAttemptRepository) Save(ctx context.Context, state domain.AttemptState, events []domain.Event, effects []domain.EffectIntent) error {
+func (r *MockAttemptRepository) Append(ctx context.Context, id domain.AttemptID, expectedVersion uint64, events []domain.Event) (uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.store[state.ID.String()] = state
-	return nil
+
+	currentVer := r.version[id]
+	if currentVer != expectedVersion {
+		return currentVer, ErrVersionConflict
+	}
+
+	state, ok := r.states[id]
+	if !ok {
+		state = domain.AttemptState{ID: id}
+	}
+
+	for _, e := range events {
+		state = domain.Apply(state, e)
+	}
+
+	newVer := currentVer + 1
+	r.states[id] = state
+	r.version[id] = newVer
+
+	return newVer, nil
 }

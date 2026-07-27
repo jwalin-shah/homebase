@@ -1,0 +1,141 @@
+package application
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"homebase/internal/domain"
+	"homebase/internal/journal"
+)
+
+func setupRepo(t *testing.T, path string) (*JournalAttemptRepository, func()) {
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatalf("failed to open journal: %v", err)
+	}
+	repo, err := NewJournalAttemptRepository(j)
+	if err != nil {
+		t.Fatalf("failed to create repo: %v", err)
+	}
+	return repo, func() {
+		j.Close()
+	}
+}
+
+// 1. Command round trip & 4. Multi-event atomicity
+func TestJournalRepo_RoundTripAndAtomicity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo.journal")
+
+	repo, cleanup := setupRepo(t, path)
+
+	aid, _ := domain.ParseAttemptID("test-roundtrip")
+	ctx := context.Background()
+
+	state, version, err := repo.Load(ctx, aid)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("expected version 0, got %d", version)
+	}
+
+	cmd := domain.CommandProposeRecovery{AttemptID: aid, IdempotencyKey: "req1", Version: version}
+	decision := domain.Decide(state, cmd)
+
+	newVer, err := repo.Append(ctx, aid, version, decision.Events)
+	if err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+	if newVer != 1 {
+		t.Fatalf("expected version 1, got %d", newVer)
+	}
+
+	cleanup()
+
+	// Restart
+	repo2, cleanup2 := setupRepo(t, path)
+	defer cleanup2()
+
+	state2, version2, err := repo2.Load(ctx, aid)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if version2 != 1 {
+		t.Fatalf("expected version 1 after restart, got %d", version2)
+	}
+	if state2.RecoveryDispatches != 1 {
+		t.Fatalf("expected 1 recovery dispatch, got %d", state2.RecoveryDispatches)
+	}
+}
+
+// 2. Duplicate command after restart
+func TestJournalRepo_DuplicateCommandAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-dup.journal")
+	repo, cleanup := setupRepo(t, path)
+
+	aid, _ := domain.ParseAttemptID("test-dup")
+	ctx := context.Background()
+	state, ver, _ := repo.Load(ctx, aid)
+	cmd := domain.CommandProposeRecovery{AttemptID: aid, IdempotencyKey: "req1", Version: ver}
+	decision := domain.Decide(state, cmd)
+	_, _ = repo.Append(ctx, aid, ver, decision.Events)
+	cleanup()
+
+	// Restart
+	repo2, cleanup2 := setupRepo(t, path)
+	defer cleanup2()
+
+	state2, ver2, _ := repo2.Load(ctx, aid)
+	cmd2 := domain.CommandProposeRecovery{AttemptID: aid, IdempotencyKey: "req1", Version: ver2}
+	decision2 := domain.Decide(state2, cmd2)
+
+	// Decision should be NoOp because IdempotencyKey "req1" is already processed.
+	if decision2.Status != domain.DecisionNoOp {
+		t.Fatalf("expected NoOp for duplicate command, got %v", decision2.Status)
+	}
+}
+
+// 3. Stale concurrent write
+func TestJournalRepo_StaleConcurrentWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-concurrent.journal")
+	repo, cleanup := setupRepo(t, path)
+	defer cleanup()
+
+	aid, _ := domain.ParseAttemptID("test-concurrent")
+	ctx := context.Background()
+
+	// Two requests load version 0
+	_, verA, _ := repo.Load(ctx, aid)
+	_, verB, _ := repo.Load(ctx, aid)
+
+	// A appends successfully
+	_, errA := repo.Append(ctx, aid, verA, []domain.Event{})
+	if errA != nil {
+		t.Fatalf("A append failed: %v", errA)
+	}
+
+	// B attempts to append with stale version
+	_, errB := repo.Append(ctx, aid, verB, []domain.Event{})
+	if errB != ErrVersionConflict {
+		t.Fatalf("expected ErrVersionConflict for B, got %v", errB)
+	}
+}
+
+// 8. Unknown event version / unsupported event type
+func TestJournalRepo_UnsupportedEvent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-unsupported.journal")
+	repo, cleanup := setupRepo(t, path)
+	defer cleanup()
+
+	aid, _ := domain.ParseAttemptID("test-unsupported")
+	ctx := context.Background()
+	
+	_, err := repo.Append(ctx, aid, 0, []domain.Event{nil})
+	if err == nil || err.Error() != "unsupported event type" {
+		t.Fatalf("expected unsupported event type error, got %v", err)
+	}
+}

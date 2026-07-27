@@ -10,8 +10,8 @@ import (
 
 // AttemptRepository defines the interface for durable attempt state.
 type AttemptRepository interface {
-	Load(ctx context.Context, id domain.AttemptID) (domain.AttemptState, error)
-	Save(ctx context.Context, state domain.AttemptState, events []domain.Event, effects []domain.EffectIntent) error
+	Load(ctx context.Context, id domain.AttemptID) (domain.AttemptState, uint64, error)
+	Append(ctx context.Context, id domain.AttemptID, expectedVersion uint64, events []domain.Event) (uint64, error)
 }
 
 // AttemptService orchestrates the execution of domain commands.
@@ -35,7 +35,7 @@ func (s *AttemptService) ExecuteCommand(ctx context.Context, cmd domain.Command)
 		return errors.New("unknown command")
 	}
 
-	state, err := s.repo.Load(ctx, attemptID)
+	state, version, err := s.repo.Load(ctx, attemptID)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}
@@ -50,12 +50,10 @@ func (s *AttemptService) ExecuteCommand(ctx context.Context, cmd domain.Command)
 		return nil
 	}
 
-	for _, e := range decision.Events {
-		state = domain.Apply(state, e)
-	}
-
-	if err := s.repo.Save(ctx, state, decision.Events, decision.Effects); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
+	_, err = s.repo.Append(ctx, attemptID, version, decision.Events)
+	if err != nil {
+		// If errors.Is(err, ErrVersionConflict), we could retry, but for now we just return it
+		return fmt.Errorf("persistence failure: %w", err)
 	}
 
 	return nil
