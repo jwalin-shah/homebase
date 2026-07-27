@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HomeBase Assurance Case AST",
+  "description": "The mandatory structured form for declaring any new behavior, assumption, or feature in HomeBase.",
+  "type": "object",
+  "required": ["id", "statement", "boundaries", "hazards", "assumptions", "status"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for this assurance case (e.g., HB-RECOVERY-001)"
+    },
+    "statement": {
+      "type": "string",
+      "description": "The explicit, verifiable property being claimed."
+    },
+    "boundaries": {
+      "type": "array",
+      "description": "The physical and logical boundaries this claim crosses.",
+      "items": { "type": "string" }
+    },
+    "hazards": {
+      "type": "object",
+      "description": "Disposition of all known failure classes against this feature.",
+      "patternProperties": {
+        "^[a-z_]+$": {
+          "type": "object",
+          "required": ["applicable"],
+          "properties": {
+            "applicable": { "type": "boolean" },
+            "prevention": { "type": "string" },
+            "detection": { "type": "string" },
+            "recovery": { "type": "string" },
+            "evidence": { "type": "string" },
+            "behavior": { "type": "string" },
+            "residual_risk_owner": { "type": "string" }
+          }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "description": "External environmental facts this claim relies upon to be true.",
+      "items": {
+        "type": "object",
+        "required": ["statement", "enforcement"],
+        "properties": {
+          "statement": { "type": "string" },
+          "enforcement": {
+            "type": "object",
+            "properties": {
+              "compile_time": { "type": "string" },
+              "test_time": { "type": "string" },
+              "runtime": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "enforced", "violated"]
+    }
+  }
+}

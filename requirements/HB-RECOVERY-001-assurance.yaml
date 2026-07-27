@@ -1,3 +1,8 @@
+id: HB-RECOVERY-001
+status: ENFORCED
+statement: >
+  For each AttemptID, no more than two distinct recovery effects
+  may be dispatched.
 feature: bounded-recovery
 boundaries:
   - HTTP command input
@@ -23,3 +28,9 @@ hazards:
     applicable: true
     disposition: outside current trust boundary
     residual_risk_owner: human
+assumptions:
+  - statement: The underlying ledger is append-only and fsyncs durably.
+    enforcement:
+      compile_time: internal/ledger/GooseProof.v
+      test_time: internal/ledger/store_test.go
+      runtime: monitors/fsync_integrity.go
