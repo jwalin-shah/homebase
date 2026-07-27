@@ -1,195 +1,298 @@
--- HomeBase Reducer
--- Pure state transition function via event application
--- Proves deterministic application and version progression
+-- HomeBase Reducer (Repaired)
+-- Pure state transitions with full precondition checking
 
 import HomeBase.Domain
 
 namespace HomeBase
 
+-- Valid State Predicate
+def ValidState (state : TaskState) : Prop :=
+  -- Contract consistency
+  (state.contract.isSome → state.status = TaskStatus.Active) ∧
+
+  -- Attempt consistency
+  (match state.active_attempt with
+   | none => true
+   | some aid =>
+     lookup aid state.attempts |>.map (fun a => a.status = AttemptStatus.Open) |>.getD false
+   ) ∧
+
+  -- No duplicate attempt IDs
+  state.attempts.Nodup (fun (a1, _) (a2, _) => a1 = a2) ∧
+
+  -- All effect intents reference existing attempts
+  (∀ eid intent, lookup eid state.effect_intents = some intent →
+    lookup intent.attempt_id state.attempts |>.isSome) ∧
+
+  -- All observations reference existing intents
+  (∀ oid obs, lookup oid state.observations = some obs →
+    lookup obs.effect_id state.effect_intents |>.isSome) ∧
+
+  -- All accepted evidence references existing observations
+  (∀ evid ev, lookup evid state.accepted_evidence = some ev →
+    lookup ev.source_observation_id state.observations |>.isSome) ∧
+
+  -- All satisfied obligations are required by contract
+  (∀ obid obs, lookup obid state.satisfied_obligations = some obs →
+    (match state.contract with
+     | none => false
+     | some c => obid ∈ c.required_obligations
+     end)) ∧
+
+  -- Attempt count <= max_attempts
+  (match state.contract with
+   | none => true
+   | some c => state.attempts.length ≤ c.max_attempts
+   end) ∧
+
+  -- Terminal state consistency
+  ((state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated) →
+   state.active_attempt = none) ∧
+
+  -- Completed requires all obligations
+  (state.status = TaskStatus.Completed →
+   match state.contract with
+   | none => false
+   | some c =>
+     ∀ obid, obid ∈ c.required_obligations →
+     (lookup obid state.satisfied_obligations).isSome
+   end) ∧
+
+  -- Escalated requires escalation data
+  (state.status = TaskStatus.Escalated → state.escalation.isSome)
+
 -- Apply a single domain event to state
--- Returns Option because malformed events should fail
 def applyEvent (state : TaskState) (event : DomainEvent) : Option TaskState :=
+  if ¬ValidState state then none else
+
   match event with
 
-  -- ContractLocked: Can only lock once, status must be Active, no prior contract
   | DomainEvent.ContractLocked cid cver obls efks max_att digest =>
-    if state.status = TaskStatus.Active ∧ state.contract = none then
+    if state.status = TaskStatus.Active ∧ state.contract = none ∧ max_att > 0 then
       some {
         state with
         version := state.version + 1
         contract := some {
           contract_id := cid
           contract_version := cver
-          contract_digest := digest
+          contract_digest := Hash.mk digest.value
+          required_obligations := obls
+          allowed_effect_kinds := efks
+          max_attempts := max_att
         }
       }
     else
       none
 
-  -- AttemptCreated: Status must be Active, can't exceed max_attempts
   | DomainEvent.AttemptCreated aid ordinal =>
-    match state.contract with
-    | none => none  -- No contract locked
-    | some contract_ref =>
-      -- For now, don't enforce max_attempts; that's in the decision function
-      let new_attempt : Attempt := {
-        attempt_id := aid
-        ordinal := ordinal
-        status := AttemptStatus.Open
-        effect_ids := ∅
-      }
-      some {
-        state with
-        version := state.version + 1
-        attempts := assocUpdate aid new_attempt state.attempts
-        active_attempt := some aid
-      }
-
-  -- EffectIntentCommitted: Active attempt must exist, effect must not exist
-  | DomainEvent.EffectIntentCommitted aid eid kind digest =>
-    if state.status = TaskStatus.Active then
-      -- Check attempt exists
-      match lookup aid state.attempts with
+    if state.status = TaskStatus.Active ∧ state.contract.isSome then
+      match state.contract with
       | none => none
-      | some attempt =>
-        -- Check effect doesn't already exist
-        if lookup eid state.effect_intents |>.isSome then
-          none  -- Effect already exists
+      | some contract =>
+        if lookup aid state.attempts |>.isSome then none
+        else if state.attempts.length ≥ contract.max_attempts then none
+        else if state.active_attempt |>.isSome then none
         else
-          let new_intent : EffectIntent := {
-            effect_id := eid
-            effect_kind := kind
-            request_digest := digest
-            status := IntentStatus.Committed
-          }
-          let updated_attempt : Attempt := {
-            attempt with
-            effect_ids := attempt.effect_ids.insert eid
+          let new_attempt : Attempt := {
+            attempt_id := aid
+            ordinal := ordinal
+            status := AttemptStatus.Open
+            effect_ids := ∅
           }
           some {
             state with
             version := state.version + 1
-            effect_intents := assocUpdate eid new_intent state.effect_intents
-            attempts := assocUpdate aid updated_attempt state.attempts
+            attempts := assocUpdate aid new_attempt state.attempts
+            active_attempt := some aid
           }
     else
       none
 
-  -- EffectObserved: Effect must exist and be committed
+  | DomainEvent.EffectIntentCommitted aid eid kind digest =>
+    if state.status = TaskStatus.Active then
+      match state.active_attempt with
+      | none => none
+      | some active =>
+        if active ≠ aid then none
+        else
+          match lookup aid state.attempts with
+          | none => none
+          | some attempt =>
+            if attempt.status ≠ AttemptStatus.Open then none
+            else if lookup eid state.effect_intents |>.isSome then none
+            else
+              match state.contract with
+              | none => none
+              | some contract =>
+                let kind_obj := EffectKind.mk kind.value
+                if kind_obj ∉ contract.allowed_effect_kinds then none
+                else
+                  let new_intent : EffectIntent := {
+                    effect_id := eid
+                    attempt_id := aid
+                    effect_kind := kind
+                    request_digest := digest
+                    status := IntentStatus.Committed
+                  }
+                  let updated_attempt := { attempt with effect_ids := attempt.effect_ids.insert eid }
+                  some {
+                    state with
+                    version := state.version + 1
+                    effect_intents := assocUpdate eid new_intent state.effect_intents
+                    attempts := assocUpdate aid updated_attempt state.attempts
+                  }
+    else
+      none
+
   | DomainEvent.EffectObserved oid aid eid outcome result =>
     if state.status = TaskStatus.Active then
       match lookup eid state.effect_intents with
       | none => none
       | some intent =>
-        if intent.status ≠ IntentStatus.Committed then
-          none  -- Effect not in right state
+        if intent.attempt_id ≠ aid then none
+        else if lookup oid state.observations |>.isSome then none
         else
-          -- Check observation doesn't already exist
-          if lookup oid state.observations |>.isSome then
-            none
-          else
-            let new_observation : Observation := {
-              observation_id := oid
-              attempt_id := aid
-              effect_id := eid
-              outcome := outcome
-              result_digest := result
-            }
-            -- Mark intent as terminal if outcome is terminal
-            let new_intent_status :=
-              if outcome = ObservationOutcome.Succeeded ∨ outcome = ObservationOutcome.Failed then
-                IntentStatus.Terminal
-              else if outcome = ObservationOutcome.Unknown then
-                IntentStatus.Terminal  -- Also terminal for Unknown
-              else
-                IntentStatus.OutcomeNeeded
-            let updated_intent := { intent with status := new_intent_status }
-            some {
-              state with
-              version := state.version + 1
-              observations := assocUpdate oid new_observation state.observations
-              effect_intents := assocUpdate eid updated_intent state.effect_intents
-            }
+          let new_observation : Observation := {
+            observation_id := oid
+            attempt_id := aid
+            effect_id := eid
+            outcome := outcome
+            result_digest := result
+          }
+          let new_intent_status :=
+            match intent.status, outcome with
+            | IntentStatus.Committed, ObservationOutcome.NotStarted => IntentStatus.OutcomeNeeded
+            | IntentStatus.Committed, ObservationOutcome.Running => IntentStatus.OutcomeNeeded
+            | IntentStatus.Committed, ObservationOutcome.Succeeded => IntentStatus.Terminal
+            | IntentStatus.Committed, ObservationOutcome.Failed => IntentStatus.Terminal
+            | IntentStatus.Committed, ObservationOutcome.Unknown => IntentStatus.Terminal
+            | IntentStatus.OutcomeNeeded, ObservationOutcome.NotStarted => IntentStatus.OutcomeNeeded
+            | IntentStatus.OutcomeNeeded, ObservationOutcome.Running => IntentStatus.OutcomeNeeded
+            | IntentStatus.OutcomeNeeded, ObservationOutcome.Succeeded => IntentStatus.Terminal
+            | IntentStatus.OutcomeNeeded, ObservationOutcome.Failed => IntentStatus.Terminal
+            | IntentStatus.OutcomeNeeded, ObservationOutcome.Unknown => IntentStatus.Terminal
+            | _, _ => intent.status
+          let updated_intent := { intent with status := new_intent_status }
+          let new_attempt_status :=
+            match outcome with
+            | ObservationOutcome.Succeeded => AttemptStatus.Succeeded
+            | ObservationOutcome.Failed => AttemptStatus.Failed
+            | ObservationOutcome.Unknown => AttemptStatus.OutcomeUnknown
+            | _ => AttemptStatus.Open
+          let updated_attempt : Attempt :=
+            if new_attempt_status = AttemptStatus.Open then
+              (lookup aid state.attempts |>.getD { attempt_id := aid, ordinal := 0, status := AttemptStatus.Open, effect_ids := ∅ })
+            else
+              let a := lookup aid state.attempts |>.getD { attempt_id := aid, ordinal := 0, status := AttemptStatus.Open, effect_ids := ∅ }
+              { a with status := new_attempt_status }
+          let new_active_attempt := if new_attempt_status = AttemptStatus.Open then state.active_attempt else none
+          some {
+            state with
+            version := state.version + 1
+            observations := assocUpdate oid new_observation state.observations
+            effect_intents := assocUpdate eid updated_intent state.effect_intents
+            attempts := assocUpdate aid updated_attempt state.attempts
+            active_attempt := new_active_attempt
+          }
     else
       none
 
-  -- EvidenceAccepted: Observation must exist and be Succeeded
   | DomainEvent.EvidenceAccepted evid aid src_oid digest =>
     if state.status = TaskStatus.Active then
       match lookup src_oid state.observations with
       | none => none
       | some obs =>
-        if obs.outcome ≠ ObservationOutcome.Succeeded then
-          none  -- Observation not successful
+        if obs.attempt_id ≠ aid then none
+        else if obs.outcome ≠ ObservationOutcome.Succeeded then none
+        else if lookup evid state.accepted_evidence |>.isSome then none
         else
-          -- Check evidence doesn't already exist
-          if lookup evid state.accepted_evidence |>.isSome then
-            none
-          else
-            let new_evidence : Evidence := {
-              evidence_id := evid
-              attempt_id := aid
-              source_observation_id := src_oid
-              evidence_digest := digest
-            }
-            some {
-              state with
-              version := state.version + 1
-              accepted_evidence := assocUpdate evid new_evidence state.accepted_evidence
-            }
-    else
-      none
-
-  -- ObligationSatisfied: Obligation must be required, all evidence must be accepted
-  | DomainEvent.ObligationSatisfied obid evidence_ids =>
-    if state.status = TaskStatus.Active then
-      -- Check all evidence IDs are in accepted_evidence
-      let all_evidence_valid := evidence_ids.all fun evid =>
-        lookup evid state.accepted_evidence |>.isSome
-      if ¬all_evidence_valid then
-        none
-      else
-        -- Check obligation doesn't already exist
-        if lookup obid state.satisfied_obligations |>.isSome then
-          none
-        else
-          let new_satisfaction : ObligationSatisfaction := {
-            obligation_id := obid
-            evidence_ids := evidence_ids
+          let new_evidence : Evidence := {
+            evidence_id := evid
+            attempt_id := aid
+            source_observation_id := src_oid
+            evidence_digest := digest
           }
           some {
             state with
             version := state.version + 1
-            satisfied_obligations := assocUpdate obid new_satisfaction state.satisfied_obligations
+            accepted_evidence := assocUpdate evid new_evidence state.accepted_evidence
           }
     else
       none
 
-  -- TaskCompleted: Status must be Active
-  | DomainEvent.TaskCompleted =>
+  | DomainEvent.ObligationSatisfied obid evidence_ids =>
     if state.status = TaskStatus.Active then
-      some {
-        state with
-        version := state.version + 1
-        status := TaskStatus.Completed
-      }
+      match state.contract with
+      | none => none
+      | some contract =>
+        if obid ∉ contract.required_obligations then none
+        else if lookup obid state.satisfied_obligations |>.isSome then none
+        else
+          let all_evidence_valid := evidence_ids.all fun evid =>
+            (lookup evid state.accepted_evidence).isSome
+          if ¬all_evidence_valid then none
+          else
+            let new_satisfaction : ObligationSatisfaction := {
+              obligation_id := obid
+              evidence_ids := evidence_ids
+            }
+            some {
+              state with
+              version := state.version + 1
+              satisfied_obligations := assocUpdate obid new_satisfaction state.satisfied_obligations
+            }
     else
       none
 
-  -- EscalationRequested: Status must be Active
+  | DomainEvent.TaskCompleted =>
+    if state.status = TaskStatus.Active then
+      match state.contract with
+      | none => none
+      | some contract =>
+        let all_required_satisfied := contract.required_obligations.all fun obid =>
+          (lookup obid state.satisfied_obligations).isSome
+        if ¬all_required_satisfied then none
+        else if state.active_attempt |>.isSome then none
+        else
+          some {
+            state with
+            version := state.version + 1
+            status := TaskStatus.Completed
+          }
+    else
+      none
+
   | DomainEvent.EscalationRequested failure_class reason related_eid =>
     if state.status = TaskStatus.Active then
-      some {
-        state with
-        version := state.version + 1
-        status := TaskStatus.Escalated
-        escalation := some {
-          failure_class := failure_class
-          reason := reason
-          related_effect_id := related_eid
-          requested_at := state.version
+      match related_eid with
+      | none =>
+        some {
+          state with
+          version := state.version + 1
+          status := TaskStatus.Escalated
+          escalation := some {
+            failure_class := failure_class
+            reason := reason
+            related_effect_id := none
+            requested_at := state.version
+          }
+          active_attempt := none
         }
-      }
+      | some eid =>
+        if lookup eid state.effect_intents |>.isNone then none
+        else
+          some {
+            state with
+            version := state.version + 1
+            status := TaskStatus.Escalated
+            escalation := some {
+              failure_class := failure_class
+              reason := reason
+              related_effect_id := some eid
+              requested_at := state.version
+            }
+            active_attempt := none
+          }
     else
       none
 
@@ -201,18 +304,15 @@ def foldEvents (state : TaskState) (events : List DomainEvent) : Option TaskStat
     | some s => applyEvent s event
   ) (some state)
 
--- Properties of the reducer
-
--- Versioning: each applied event increments version by exactly 1
+-- Version Progression: each applied event increments version by exactly 1
 theorem version_increment_single (state : TaskState) (event : DomainEvent) :
     ∀ state', applyEvent state event = some state' →
     state'.version = state.version + 1 := by
   intro state' h
-  cases event <;> simp [applyEvent] at h <;>
-  try { split_ifs at h <;> simp at h }
-  all_goals (try { injection h with h; omega }; try { omega })
+  simp [applyEvent] at h
+  split_ifs at h <|> (injection h with h; omega)
 
--- Versioning: folding n events increments version by n
+-- Version Progression: folding n events increments version by n
 theorem version_increment_fold (state : TaskState) (events : List DomainEvent) :
     ∀ state', foldEvents state events = some state' →
     state'.version = state.version + events.length := by
@@ -225,13 +325,10 @@ theorem version_increment_fold (state : TaskState) (events : List DomainEvent) :
   | cons e es ih =>
     intro state' h
     simp [foldEvents] at h
-    cases result : applyEvent state e with
-    | none => simp [result] at h
-    | some s =>
-      simp [result] at h
-      have h' := version_increment_single state e s rfl
-      have := ih h
-      omega
+    split_ifs at h
+    have h' := version_increment_single state e _ rfl
+    have := ih h
+    omega
 
 -- Determinism: applying the same event to the same state produces the same result
 theorem applyEvent_det (state : TaskState) (event : DomainEvent) (s1 s2 : TaskState) :
@@ -242,17 +339,12 @@ theorem applyEvent_det (state : TaskState) (event : DomainEvent) (s1 s2 : TaskSt
   rw [h1] at h2
   injection h2
 
--- Terminal states: if state is Completed or Escalated, applying most events fails
-theorem terminal_blocks_mutation (state : TaskState) (event : DomainEvent) :
-    state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated →
-    (applyEvent state event).isNone := by
-  intro hterm
-  cases event <;> simp [applyEvent] <;>
-  try {
-    cases hterm with
-    | inl h => simp [h]
-    | inr h => simp [h]
-  }
-  all_goals (try omega)
+-- Terminal trapping: terminal states reject mutations
+theorem terminal_trapping (state : TaskState) (event : DomainEvent) :
+    (state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated) →
+    applyEvent state event = none := by
+  intro h
+  simp [applyEvent]
+  split_ifs <|> omega
 
 end HomeBase

@@ -1,11 +1,25 @@
--- HomeBase Domain Model
--- Abstract domain concepts for decision governance
+-- HomeBase Domain Model (Repaired)
+-- Complete abstract domain for decision governance
 -- No persistence, cryptography, or external effects
 
-import Data.List
-import Data.Finmap
-
 namespace HomeBase
+
+-- Opaque typed value wrappers
+structure Hash where
+  value : String
+  deriving DecidableEq, Hashable
+
+structure EffectKind where
+  value : String
+  deriving DecidableEq, Hashable
+
+structure FailureClass where
+  value : String
+  deriving DecidableEq, Hashable
+
+structure EventID where
+  value : String
+  deriving DecidableEq, Hashable
 
 -- Identity Types (opaque)
 structure TaskID where
@@ -92,6 +106,9 @@ inductive RejectionReason where
   | STALE_VERSION
   | UNAUTHORIZED
   | INVALID_STATUS
+  | TASK_ID_MISMATCH
+  | CONTRACT_ALREADY_LOCKED
+  | CONFLICTING_CONTRACT
   | ATTEMPT_LIMIT_REACHED
   | ATTEMPT_NOT_FOUND
   | ATTEMPT_NOT_ACTIVE
@@ -128,10 +145,14 @@ structure Authority where
   role : AuthorityRole
   deriving DecidableEq
 
-structure ContractRef where
+-- Complete Contract (stored in TaskState, not just ContractRef)
+structure Contract where
   contract_id : ContractID
   contract_version : ContractVersion
-  contract_digest : String  -- Hash as string for Lean
+  contract_digest : Hash
+  required_obligations : Finset ObligationID
+  allowed_effect_kinds : Finset EffectKind
+  max_attempts : Nat
   deriving DecidableEq
 
 structure Attempt where
@@ -141,10 +162,12 @@ structure Attempt where
   effect_ids : Finset EffectID
   deriving DecidableEq
 
+-- EffectIntent now includes attempt_id for ownership tracking
 structure EffectIntent where
   effect_id : EffectID
-  effect_kind : String
-  request_digest : String
+  attempt_id : AttemptID
+  effect_kind : EffectKind
+  request_digest : Hash
   status : IntentStatus
   deriving DecidableEq
 
@@ -153,14 +176,14 @@ structure Observation where
   attempt_id : AttemptID
   effect_id : EffectID
   outcome : ObservationOutcome
-  result_digest : Option String
+  result_digest : Option Hash
   deriving DecidableEq
 
 structure Evidence where
   evidence_id : EvidenceID
   attempt_id : AttemptID
   source_observation_id : ObservationID
-  evidence_digest : String
+  evidence_digest : Hash
   deriving DecidableEq
 
 structure ObligationSatisfaction where
@@ -169,15 +192,15 @@ structure ObligationSatisfaction where
   deriving DecidableEq
 
 structure CommandReceipt where
-  command_fingerprint : String
+  command_fingerprint : Hash
   resulting_event_types : List String
   deriving DecidableEq
 
 structure Escalation where
-  failure_class : String
+  failure_class : FailureClass
   reason : String
   related_effect_id : Option EffectID
-  requested_at : Nat  -- version when escalation occurred
+  requested_at : Nat
   deriving DecidableEq
 
 -- Current State Projection
@@ -186,10 +209,10 @@ structure TaskState where
   version : Nat
   status : TaskStatus
 
-  -- Contract reference
-  contract : Option ContractRef
+  -- Complete locked contract (stores all fields)
+  contract : Option Contract
 
-  -- Attempts and effects (simplified: map via list of key-value pairs)
+  -- Attempts and effects
   attempts : List (AttemptID × Attempt)
   active_attempt : Option AttemptID
   effect_intents : List (EffectID × EffectIntent)
@@ -212,9 +235,9 @@ inductive DomainEvent where
       contract_id : ContractID →
       contract_version : ContractVersion →
       required_obligations : Finset ObligationID →
-      allowed_effect_kinds : Finset String →
+      allowed_effect_kinds : Finset EffectKind →
       max_attempts : Nat →
-      contract_digest : String →
+      contract_digest : Hash →
       DomainEvent
 
   | AttemptCreated :
@@ -225,8 +248,8 @@ inductive DomainEvent where
   | EffectIntentCommitted :
       attempt_id : AttemptID →
       effect_id : EffectID →
-      effect_kind : String →
-      request_digest : String →
+      effect_kind : EffectKind →
+      request_digest : Hash →
       DomainEvent
 
   | EffectObserved :
@@ -234,14 +257,14 @@ inductive DomainEvent where
       attempt_id : AttemptID →
       effect_id : EffectID →
       outcome : ObservationOutcome →
-      result_digest : Option String →
+      result_digest : Option Hash →
       DomainEvent
 
   | EvidenceAccepted :
       evidence_id : EvidenceID →
       attempt_id : AttemptID →
       source_observation_id : ObservationID →
-      evidence_digest : String →
+      evidence_digest : Hash →
       DomainEvent
 
   | ObligationSatisfied :
@@ -253,7 +276,7 @@ inductive DomainEvent where
       DomainEvent
 
   | EscalationRequested :
-      failure_class : String →
+      failure_class : FailureClass →
       reason : String →
       related_effect_id : Option EffectID →
       DomainEvent
@@ -263,13 +286,13 @@ inductive DomainEvent where
 -- Command Origin Metadata
 structure CommandOrigin where
   command_id : CommandID
-  command_fingerprint : String
+  command_fingerprint : Hash
   authority : Authority
   correlation_id : CorrelationID
-  causation_id : Option (CommandID ⊕ String)  -- CommandID or EventID (as string)
+  causation_id : Option (CommandID ⊕ EventID)
   deriving DecidableEq
 
--- Recorded Domain Event (for fixtures)
+-- Recorded Domain Event (for fixtures and replay)
 structure RecordedDomainEvent where
   aggregate_version : Nat
   domain_event : DomainEvent
@@ -282,9 +305,9 @@ inductive CommandBody where
       contract_id : ContractID →
       contract_version : ContractVersion →
       required_obligations : Finset ObligationID →
-      allowed_effect_kinds : Finset String →
+      allowed_effect_kinds : Finset EffectKind →
       max_attempts : Nat →
-      contract_digest : String →
+      contract_digest : Hash →
       CommandBody
 
   | CreateAttempt :
@@ -295,8 +318,8 @@ inductive CommandBody where
   | CommitEffectIntent :
       attempt_id : AttemptID →
       effect_id : EffectID →
-      effect_kind : String →
-      request_digest : String →
+      effect_kind : EffectKind →
+      request_digest : Hash →
       CommandBody
 
   | RecordEffectObservation :
@@ -304,14 +327,14 @@ inductive CommandBody where
       attempt_id : AttemptID →
       effect_id : EffectID →
       outcome : ObservationOutcome →
-      result_digest : Option String →
+      result_digest : Option Hash →
       CommandBody
 
   | AcceptEvidence :
       evidence_id : EvidenceID →
       attempt_id : AttemptID →
       source_observation_id : ObservationID →
-      evidence_digest : String →
+      evidence_digest : Hash →
       CommandBody
 
   | SatisfyObligation :
@@ -323,19 +346,22 @@ inductive CommandBody where
       CommandBody
 
   | RequestEscalation :
-      failure_class : String →
+      failure_class : FailureClass →
       reason : String →
+      related_effect_id : Option EffectID →
       CommandBody
 
   deriving DecidableEq
 
+-- CommandEnvelope now includes commandFingerprint
 structure CommandEnvelope where
   command_id : CommandID
   task_id : TaskID
   expected_version : Nat
+  command_fingerprint : Hash
   authority : Authority
   correlation_id : CorrelationID
-  causation_id : Option (CommandID ⊕ String)
+  causation_id : Option (CommandID ⊕ EventID)
   body : CommandBody
   deriving DecidableEq
 
@@ -343,12 +369,10 @@ structure CommandEnvelope where
 inductive Decision where
   | Rejected :
       reason_code : RejectionReason →
-      message : String →
       Decision
 
   | NoOp :
       reason_code : NoOpReason →
-      message : String →
       Decision
 
   | Accepted :
@@ -364,5 +388,9 @@ def lookup {α β : Type} [DecidableEq α] (key : α) (lst : List (α × β)) : 
 -- Utility: update association list
 def assocUpdate {α β : Type} [DecidableEq α] (key : α) (value : β) (lst : List (α × β)) : List (α × β) :=
   (key, value) :: (lst.filter fun (k, _) => k ≠ key)
+
+-- Utility: remove from association list
+def assocRemove {α β : Type} [DecidableEq α] (key : α) (lst : List (α × β)) : List (α × β) :=
+  lst.filter fun (k, _) => k ≠ key
 
 end HomeBase

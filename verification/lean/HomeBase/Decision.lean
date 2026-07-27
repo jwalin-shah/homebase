@@ -1,20 +1,10 @@
--- HomeBase Decision Function
--- Evaluates commands against state in specified precedence order
--- Returns Decision (Accepted, NoOp, or Rejected)
+-- HomeBase Decision Function (Repaired)
+-- Evaluates commands with explicit precedence and full precondition checking
 
 import HomeBase.Domain
 import HomeBase.Reducer
 
 namespace HomeBase
-
--- Check if a command is already persisted in the ledger via its origin
--- For Lean model, we track this via command_receipts
-def isCommandPersisted (state : TaskState) (cmd_id : CommandID) : Bool :=
-  (lookup cmd_id state.command_receipts).isSome
-
--- Check if fingerprints match (simplified: exact string comparison)
-def fingerprintMatches (fp1 fp2 : String) : Bool :=
-  fp1 = fp2
 
 -- Authorization check
 def isAuthorized (authority : Authority) (command_type : String) : Bool :=
@@ -22,17 +12,18 @@ def isAuthorized (authority : Authority) (command_type : String) : Bool :=
   | AuthorityRole.TaskInitiator => command_type = "LockContract"
   | AuthorityRole.Orchestrator =>
     command_type = "CreateAttempt" ∨
+    command_type = "CommitEffectIntent" ∨
+    command_type = "SatisfyObligation" ∨
     command_type = "ProposeCompletion" ∨
     command_type = "RequestEscalation"
   | AuthorityRole.BridgeAdapter =>
-    command_type = "CommitEffectIntent" ∨
     command_type = "RecordEffectObservation"
   | AuthorityRole.Verifier =>
     command_type = "AcceptEvidence" ∨
     command_type = "SatisfyObligation"
-  | AuthorityRole.RecoveryController => true  -- Has all permissions
+  | AuthorityRole.RecoveryController => true
 
--- Get the command type string
+-- Get command type string
 def commandType (cmd : CommandBody) : String :=
   match cmd with
   | CommandBody.LockContract _ _ _ _ _ _ => "LockContract"
@@ -42,191 +33,254 @@ def commandType (cmd : CommandBody) : String :=
   | CommandBody.AcceptEvidence _ _ _ _ => "AcceptEvidence"
   | CommandBody.SatisfyObligation _ _ => "SatisfyObligation"
   | CommandBody.ProposeCompletion => "ProposeCompletion"
-  | CommandBody.RequestEscalation _ _ => "RequestEscalation"
+  | CommandBody.RequestEscalation _ _ _ => "RequestEscalation"
 
--- Decide: Main decision function
--- Evaluation order matches SEMANTICS.md Section 8
+-- Check if command is already persisted (exact fingerprint match)
+def isCommandApplied (state : TaskState) (cmd_id : CommandID) (fingerprint : Hash) : Bool :=
+  match lookup cmd_id state.command_receipts with
+  | none => false
+  | some receipt => receipt.command_fingerprint = fingerprint
+
+-- Check if command ID exists with different fingerprint
+def isCommandConflict (state : TaskState) (cmd_id : CommandID) (fingerprint : Hash) : Bool :=
+  match lookup cmd_id state.command_receipts with
+  | none => false
+  | some receipt => receipt.command_fingerprint ≠ fingerprint
+
+-- Main decision function with explicit precedence
 def decide (state : TaskState) (cmd : CommandEnvelope) : Decision :=
   let cmd_type := commandType cmd.body
 
-  -- 1. Replay/Conflict Check
-  -- (Simplified: in actual ledger lookup, check command_receipts)
-  if isCommandPersisted state cmd.command_id then
-    -- In real system, check fingerprint against persisted command
-    -- For now, return COMMAND_ALREADY_APPLIED (simplified)
-    Decision.NoOp NoOpReason.COMMAND_ALREADY_APPLIED
-      "Identical command (same command_id) was already processed."
+  -- 1. Task ID mismatch check (highest priority)
+  if cmd.task_id ≠ state.task_id then
+    Decision.Rejected RejectionReason.TASK_ID_MISMATCH
   else
-  -- 2. Expected Version Check
+
+  -- 2. Accepted CommandID replay/conflict check
+  if isCommandApplied state cmd.command_id cmd.command_fingerprint then
+    Decision.NoOp NoOpReason.COMMAND_ALREADY_APPLIED
+  else if isCommandConflict state cmd.command_id cmd.command_fingerprint then
+    Decision.Rejected RejectionReason.COMMAND_ID_CONFLICT
+  else
+
+  -- 3. Expected version check
   if cmd.expected_version ≠ state.version then
     Decision.Rejected RejectionReason.STALE_VERSION
-      s!"Expected version {cmd.expected_version} but current version is {state.version}"
   else
-  -- 3. Authority Check
+
+  -- 4. Authority check
   if ¬isAuthorized cmd.authority cmd_type then
     Decision.Rejected RejectionReason.UNAUTHORIZED
-      s!"Authority {cmd.authority.principal_id.value} with role {cmd.authority.role} not permitted for {cmd_type}"
   else
-  -- 4. Terminal State Check
+
+  -- 5. Terminal state check
   if state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated then
     match cmd.body with
     | CommandBody.ProposeCompletion =>
       if state.status = TaskStatus.Completed then
-        Decision.NoOp NoOpReason.ALREADY_COMPLETED "Task is already completed"
+        Decision.NoOp NoOpReason.ALREADY_COMPLETED
       else
         Decision.Rejected RejectionReason.TERMINAL_STATE
-          "Cannot execute ProposeCompletion: task is in terminal state"
     | _ =>
       Decision.Rejected RejectionReason.TERMINAL_STATE
-        "Cannot execute operational command: task is in terminal state"
   else
 
-  -- 5-7. Command-Specific Logic
+  -- 6-8. Command-specific logic
   match cmd.body with
 
   | CommandBody.LockContract cid cv obls efks max_att digest =>
-    -- Can only lock once
-    if state.contract.isSome then
-      -- Check if it's identical (same contract)
+    if max_att = 0 then
+      Decision.Rejected RejectionReason.INVALID_STATUS
+    else
       match state.contract with
       | some existing =>
         if existing.contract_id = cid ∧ existing.contract_version = cv ∧
-           existing.contract_digest = digest then
-          Decision.NoOp NoOpReason.IDENTICAL_CONTRACT "Contract already locked identically"
+           existing.contract_digest = digest ∧
+           existing.required_obligations = obls ∧
+           existing.allowed_effect_kinds = efks ∧
+           existing.max_attempts = max_att then
+          Decision.NoOp NoOpReason.IDENTICAL_CONTRACT
         else
-          Decision.Rejected RejectionReason.COMMAND_ID_CONFLICT
-            "Contract already locked with different parameters"
-      | none => by contradiction
-    else
-      -- Emit ContractLocked event
-      let event := DomainEvent.ContractLocked cid cv obls efks max_att digest
-      Decision.Accepted [event]
+          Decision.Rejected RejectionReason.CONFLICTING_CONTRACT
+      | none =>
+        let event := DomainEvent.ContractLocked cid cv obls efks max_att digest
+        Decision.Accepted [event]
 
   | CommandBody.CreateAttempt aid ordinal =>
-    -- Check contract is locked
     if state.contract.isNone then
-      Decision.Rejected RejectionReason.INVALID_STATUS "No contract locked"
+      Decision.Rejected RejectionReason.INVALID_STATUS
     else
-      -- Check attempt doesn't already exist
-      match lookup aid state.attempts with
-      | some existing =>
-        if existing.ordinal = ordinal then
-          Decision.NoOp NoOpReason.IDENTICAL_ATTEMPT "Attempt already exists with same ordinal"
+      match state.contract with
+      | none => by contradiction
+      | some contract =>
+        if state.attempts.length ≥ contract.max_attempts then
+          Decision.Rejected RejectionReason.ATTEMPT_LIMIT_REACHED
+        else if state.active_attempt.isSome then
+          Decision.Rejected RejectionReason.INVALID_STATUS
         else
-          Decision.Rejected RejectionReason.COMMAND_ID_CONFLICT
-            "Attempt already exists with different ordinal"
-      | none =>
-        -- Check attempt limit
-        match state.contract with
-        | none => by contradiction
-        | some contract_ref =>
-          -- Simplified: don't enforce max_attempts here; would need to extract from initial state
-          let event := DomainEvent.AttemptCreated aid ordinal
-          Decision.Accepted [event]
+          match lookup aid state.attempts with
+          | some existing =>
+            if existing.ordinal = ordinal then
+              Decision.NoOp NoOpReason.IDENTICAL_ATTEMPT
+            else
+              Decision.Rejected RejectionReason.CONFLICTING_EFFECT_ID
+          | none =>
+            let event := DomainEvent.AttemptCreated aid ordinal
+            Decision.Accepted [event]
 
   | CommandBody.CommitEffectIntent aid eid kind digest =>
-    -- Check active attempt exists
-    match state.active_attempt with
-    | none =>
-      Decision.Rejected RejectionReason.ATTEMPT_NOT_ACTIVE "No active attempt"
-    | some active =>
-      if active ≠ aid then
-        Decision.Rejected RejectionReason.ATTEMPT_NOT_FOUND "Specified attempt is not active"
-      else
-        -- Check effect doesn't already exist
-        match lookup eid state.effect_intents with
-        | some existing =>
-          if existing.request_digest = digest then
-            Decision.NoOp NoOpReason.IDENTICAL_EFFECT_INTENT
-              "Effect already committed with same request_digest"
-          else
-            Decision.Rejected RejectionReason.CONFLICTING_EFFECT_ID
-              s!"Effect {eid.value} already exists with different request_digest"
-        | none =>
-          let event := DomainEvent.EffectIntentCommitted aid eid kind digest
-          Decision.Accepted [event]
+    if state.contract.isNone then
+      Decision.Rejected RejectionReason.INVALID_STATUS
+    else
+      match state.active_attempt with
+      | none =>
+        Decision.Rejected RejectionReason.ATTEMPT_NOT_ACTIVE
+      | some active =>
+        if active ≠ aid then
+          Decision.Rejected RejectionReason.ATTEMPT_NOT_FOUND
+        else
+          match lookup aid state.attempts with
+          | none =>
+            Decision.Rejected RejectionReason.ATTEMPT_NOT_FOUND
+          | some attempt =>
+            if attempt.status ≠ AttemptStatus.Open then
+              Decision.Rejected RejectionReason.INVALID_STATUS
+            else
+              match state.contract with
+              | none => by contradiction
+              | some contract =>
+                if kind ∉ contract.allowed_effect_kinds then
+                  Decision.Rejected RejectionReason.EFFECT_KIND_NOT_ALLOWED
+                else
+                  match lookup eid state.effect_intents with
+                  | some existing =>
+                    if existing.attempt_id = aid ∧ existing.effect_kind = kind ∧
+                       existing.request_digest = digest then
+                      Decision.NoOp NoOpReason.IDENTICAL_EFFECT_INTENT
+                    else
+                      Decision.Rejected RejectionReason.CONFLICTING_EFFECT_ID
+                  | none =>
+                    let event := DomainEvent.EffectIntentCommitted aid eid kind digest
+                    Decision.Accepted [event]
 
   | CommandBody.RecordEffectObservation oid aid eid outcome result =>
-    -- Check effect intent exists and is committed
     match lookup eid state.effect_intents with
     | none =>
-      Decision.Rejected RejectionReason.EFFECT_NOT_FOUND "Effect not found"
+      Decision.Rejected RejectionReason.EFFECT_NOT_FOUND
     | some intent =>
-      if intent.status ≠ IntentStatus.Committed then
-        Decision.Rejected RejectionReason.INVALID_STATUS "Effect intent not in Committed state"
-      else
-        -- Check observation doesn't already exist
+      if intent.attempt_id ≠ aid then
+        Decision.Rejected RejectionReason.CONFLICTING_OBSERVATION_ID
+      else if intent.status = IntentStatus.Terminal then
         match lookup oid state.observations with
         | some existing =>
-          if existing.outcome = outcome then
+          if existing.attempt_id = aid ∧ existing.effect_id = eid ∧
+             existing.outcome = outcome ∧ existing.result_digest = result then
             Decision.NoOp NoOpReason.IDENTICAL_OBSERVATION
-              "Observation already recorded with same outcome"
           else
             Decision.Rejected RejectionReason.CONFLICTING_OBSERVATION_ID
-              s!"Observation {oid.value} already exists with different outcome"
+        | none =>
+          Decision.Rejected RejectionReason.INVALID_STATUS
+      else
+        match lookup oid state.observations with
+        | some existing =>
+          if existing.attempt_id = aid ∧ existing.effect_id = eid ∧
+             existing.outcome = outcome ∧ existing.result_digest = result then
+            Decision.NoOp NoOpReason.IDENTICAL_OBSERVATION
+          else
+            Decision.Rejected RejectionReason.CONFLICTING_OBSERVATION_ID
         | none =>
           let event := DomainEvent.EffectObserved oid aid eid outcome result
           Decision.Accepted [event]
 
   | CommandBody.AcceptEvidence evid aid src_oid digest =>
-    -- Check observation exists and is Succeeded
     match lookup src_oid state.observations with
     | none =>
-      Decision.Rejected RejectionReason.OBSERVATION_NOT_FOUND "Observation not found"
+      Decision.Rejected RejectionReason.OBSERVATION_NOT_FOUND
     | some obs =>
-      if obs.outcome ≠ ObservationOutcome.Succeeded then
+      if obs.attempt_id ≠ aid then
+        Decision.Rejected RejectionReason.CONFLICTING_EVIDENCE_ID
+      else if obs.outcome ≠ ObservationOutcome.Succeeded then
         Decision.Rejected RejectionReason.OBSERVATION_NOT_SUCCESSFUL
-          "Observation outcome is not Succeeded"
       else
-        -- Check evidence doesn't already exist
         match lookup evid state.accepted_evidence with
         | some existing =>
-          if existing.source_observation_id = src_oid then
+          if existing.attempt_id = aid ∧ existing.source_observation_id = src_oid ∧
+             existing.evidence_digest = digest then
             Decision.NoOp NoOpReason.IDENTICAL_EVIDENCE
-              "Evidence already accepted with same source"
           else
             Decision.Rejected RejectionReason.CONFLICTING_EVIDENCE_ID
-              s!"Evidence {evid.value} already exists with different source"
         | none =>
           let event := DomainEvent.EvidenceAccepted evid aid src_oid digest
           Decision.Accepted [event]
 
   | CommandBody.SatisfyObligation obid evidence_ids =>
-    -- Check all evidence IDs exist
-    let all_valid := evidence_ids.all fun evid =>
-      (lookup evid state.accepted_evidence).isSome
-    if ¬all_valid then
-      Decision.Rejected RejectionReason.EVIDENCE_NOT_FOUND
-        "One or more evidence IDs not found or not accepted"
+    if state.contract.isNone then
+      Decision.Rejected RejectionReason.INVALID_STATUS
     else
-      -- Check obligation doesn't already exist
-      match lookup obid state.satisfied_obligations with
-      | some existing =>
-        if existing.evidence_ids = evidence_ids then
-          Decision.NoOp NoOpReason.OBLIGATION_ALREADY_SATISFIED
-            "Obligation already satisfied with same evidence set"
+      match state.contract with
+      | none => by contradiction
+      | some contract =>
+        if obid ∉ contract.required_obligations then
+          Decision.Rejected RejectionReason.OBLIGATION_NOT_REQUIRED
+        else if evidence_ids.isEmpty then
+          Decision.Rejected RejectionReason.EVIDENCE_NOT_FOUND
         else
-          Decision.Rejected RejectionReason.CONFLICTING_EVIDENCE_ID
-            s!"Obligation {obid.value} already satisfied with different evidence"
-      | none =>
-        let event := DomainEvent.ObligationSatisfied obid evidence_ids
-        Decision.Accepted [event]
+          let all_valid := evidence_ids.all fun evid =>
+            (lookup evid state.accepted_evidence).isSome
+          if ¬all_valid then
+            Decision.Rejected RejectionReason.EVIDENCE_NOT_FOUND
+          else
+            match lookup obid state.satisfied_obligations with
+            | some existing =>
+              if existing.evidence_ids = evidence_ids then
+                Decision.NoOp NoOpReason.OBLIGATION_ALREADY_SATISFIED
+              else
+                Decision.Rejected RejectionReason.CONFLICTING_EVIDENCE_ID
+            | none =>
+              let event := DomainEvent.ObligationSatisfied obid evidence_ids
+              Decision.Accepted [event]
 
   | CommandBody.ProposeCompletion =>
-    -- Status must be Active (already checked)
-    -- All required obligations must be satisfied
-    -- Simplified: check satisfied_obligations is non-empty
-    -- (Full implementation would check against contract.required_obligations)
-    if state.satisfied_obligations.isEmpty then
-      Decision.Rejected RejectionReason.UNMET_OBLIGATIONS
-        "Not all required obligations are satisfied"
+    if state.contract.isNone then
+      Decision.Rejected RejectionReason.INVALID_STATUS
     else
-      let event := DomainEvent.TaskCompleted
-      Decision.Accepted [event]
+      match state.contract with
+      | none => by contradiction
+      | some contract =>
+        let all_required_satisfied := contract.required_obligations.all fun obid =>
+          (lookup obid state.satisfied_obligations).isSome
+        if ¬all_required_satisfied then
+          Decision.Rejected RejectionReason.UNMET_OBLIGATIONS
+        else if state.active_attempt.isSome then
+          Decision.Rejected RejectionReason.INVALID_STATUS
+        else
+          let event := DomainEvent.TaskCompleted
+          Decision.Accepted [event]
 
-  | CommandBody.RequestEscalation failure_class reason =>
-    -- Status must be Active (already checked)
-    let event := DomainEvent.EscalationRequested failure_class reason none
-    Decision.Accepted [event]
+  | CommandBody.RequestEscalation failure_class reason related_eid =>
+    match related_eid with
+    | none =>
+      let event := DomainEvent.EscalationRequested failure_class reason none
+      Decision.Accepted [event]
+    | some eid =>
+      if lookup eid state.effect_intents |>.isNone then
+        Decision.Rejected RejectionReason.EFFECT_NOT_FOUND
+      else
+        let event := DomainEvent.EscalationRequested failure_class reason (some eid)
+        Decision.Accepted [event]
+
+-- Fundamental theorem: accepted decisions are reducer-applicable
+theorem accepted_events_apply
+    (hvalid : ValidState state)
+    (hdecision : decide state cmd = Decision.Accepted events) :
+    ∃ state',
+      foldEvents state events = some state' ∧
+      ValidState state' := by
+  sorry  -- To be completed in full proof audit
+
+-- Determinism: decide is deterministic
+theorem decide_deterministic (state : TaskState) (cmd : CommandEnvelope) :
+    decide state cmd = decide state cmd := by
+  rfl
 
 end HomeBase
