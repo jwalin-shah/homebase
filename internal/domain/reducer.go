@@ -3,6 +3,8 @@ package domain
 import (
 	"crypto/sha256"
 	"fmt"
+	"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
+	"homebase/internal/dafny_reducer"
 )
 
 // Decide is the pure transition function for an attempt.
@@ -136,7 +138,13 @@ func Apply(state AttemptState, event Event) AttemptState {
 	switch e := event.(type) {
 	case EventRecoveryDispatched:
 		newState.Phase = AttemptRecovering
-		newState.RecoveryDispatches++
+		
+		// Delegate bounded recovery math to Dafny verified core
+		dafnyState := dafny.IntOfInt64(int64(state.RecoveryDispatches))
+		dafnyEvent := Reducer.Companion_Event_.Create_EventRecoveryDispatched_(dafny.SeqOfString(string(e.EffectID)), dafny.IntOfInt64(int64(e.Ordinal)))
+		dafnyNewState := Reducer.Companion_Default___.Apply(dafnyState, dafnyEvent)
+		newState.RecoveryDispatches = uint8(dafnyNewState.Int64())
+
 		if newState.DispatchedEffectIDs == nil {
 			newState.DispatchedEffectIDs = make(map[EffectID]struct{})
 		}
