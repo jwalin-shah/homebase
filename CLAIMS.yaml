@@ -32,3 +32,14 @@ claims:
       command: "go test -count=1 -race ./internal/domain"
       exit_code: 0
     scope: "Property-tested domain trace execution"
+  - id: CLM-00046
+    text: "The Effect lifecycle state machine mathematically prevents stale worker observations and bounds retries."
+    type: property_proved
+    consequence: architectural
+    confidence: 1.0
+    status: proposed
+    source:
+      kind: formal_verification
+      command: "dafny translate go verification/dafny/Reducer.dfy"
+      exit_code: 0
+    scope: "Dafny execution semantics"
