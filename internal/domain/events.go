@@ -6,9 +6,10 @@ type Event interface {
 }
 
 type EventRecoveryDispatched struct {
-	AttemptID AttemptID
-	EffectID  EffectID
-	Ordinal   uint8
+	AttemptID      AttemptID
+	EffectID       EffectID
+	Ordinal        uint8
+	IdempotencyKey string
 }
 
 func (e EventRecoveryDispatched) isEvent() {}

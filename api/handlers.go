@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"homebase/internal/application"
 	"homebase/internal/domain"
 	"homebase/internal/ledger"
 	"homebase/internal/signing"
@@ -16,11 +17,13 @@ type Server struct {
 	validator *validation.Validator
 	signer    *signing.Signer
 	store     *ledger.Store
+	attemptSvc *application.AttemptService
 }
 
 // NewServer initializes the API.
 func NewServer(v *validation.Validator, s *signing.Signer, st *ledger.Store) *Server {
-	return &Server{validator: v, signer: s, store: st}
+	// For milestone 1, we use a mock repository (non-durable) since persistence is milestone 3.
+	return &Server{validator: v, signer: s, store: st, attemptSvc: application.NewAttemptService(application.NewMockAttemptRepository())}
 }
 
 // RecordRequest is the JSON payload Orbit or Bridge sends to HomeBase.
@@ -61,16 +64,20 @@ func (s *Server) HandleRecordDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	assuranceCase := types.NewAssuranceCase(req.ID, subject, req.Claim, req.Model, req.Argument, axioms, req.Evidence, req.RecordedBy)
 
-	// 2. Initialize the domain state
-	state := domain.AttemptState{ID: domain.AttemptID(req.ID)}
+	// 2. Parse the AttemptID
+	aid, err := domain.ParseAttemptID(req.ID)
+	if err != nil {
+		http.Error(w, "Invalid AttemptID", http.StatusBadRequest)
+		return
+	}
 
-	// 3. Route through the pure reducer
+	// 3. Route through the application service
 	if err := s.validator.VerifyAxiomsExist(r.Context(), axioms); err != nil {
 		// Fails validation, so we propose recovery
-		cmd := domain.CommandProposeRecovery{AttemptID: state.ID}
-		decision := domain.Decide(state, cmd)
-		for _, e := range decision.Events {
-			state = domain.Apply(state, e)
+		cmd := domain.CommandProposeRecovery{AttemptID: aid}
+		if svcErr := s.attemptSvc.ExecuteCommand(r.Context(), cmd); svcErr != nil {
+			http.Error(w, svcErr.Error(), http.StatusConflict)
+			return
 		}
 		
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -78,10 +85,10 @@ func (s *Server) HandleRecordDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	// Execution successful, conclude attempt
-	cmd := domain.CommandConclude{AttemptID: state.ID}
-	decision := domain.Decide(state, cmd)
-	for _, e := range decision.Events {
-		state = domain.Apply(state, e)
+	cmd := domain.CommandConclude{AttemptID: aid}
+	if svcErr := s.attemptSvc.ExecuteCommand(r.Context(), cmd); svcErr != nil {
+		http.Error(w, svcErr.Error(), http.StatusConflict)
+		return
 	}
 
 	// 4. Seal the decision with Ed25519 (Invariant 4)

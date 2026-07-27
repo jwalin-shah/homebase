@@ -6,7 +6,9 @@ type Command interface {
 }
 
 type CommandProposeRecovery struct {
-	AttemptID AttemptID
+	AttemptID      AttemptID
+	IdempotencyKey string
+	Version        uint64
 }
 
 func (c CommandProposeRecovery) isCommand() {}

@@ -1,4 +1,9 @@
 id: HB-RECOVERY-001
+subject: attempt
+measure: authorized_recovery_effect_count
+operator: less_than_or_equal
+bound: 2
+scope_key: attempt_id
 statement: >
   For each AttemptID, no more than two distinct recovery effects
   may be dispatched.
