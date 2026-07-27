@@ -245,11 +245,14 @@ theorem applyEvent_det (state : TaskState) (event : DomainEvent) (s1 s2 : TaskSt
 -- Terminal states: if state is Completed or Escalated, applying most events fails
 theorem terminal_blocks_mutation (state : TaskState) (event : DomainEvent) :
     state.status = TaskStatus.Completed ∨ state.status = TaskStatus.Escalated →
-    (applyEvent state event).isNone ∨ applyEvent state event = some state := by
+    (applyEvent state event).isNone := by
   intro hterm
   cases event <;> simp [applyEvent] <;>
-  try { split_ifs <;> simp } <;>
-  try { omega }
-  all_goals (try { cases hterm <;> simp at * })
+  try {
+    cases hterm with
+    | inl h => simp [h]
+    | inr h => simp [h]
+  }
+  all_goals (try omega)
 
 end HomeBase
