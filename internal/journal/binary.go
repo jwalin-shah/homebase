@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	MagicBytes     = []byte("JRNL")
+	MagicBytes      = []byte("JRNL")
 	FormatVersion   = uint16(1)
 	ErrInvalidMagic = errors.New("invalid magic bytes")
 	ErrCorruptData  = errors.New("checksum mismatch")
@@ -55,6 +55,10 @@ func (j *BinaryJournal) recover() error {
 
 	var lastSeq uint64 = 0
 	var lastHash [32]byte
+	lastGoodOffset, err := j.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
 
 	for {
 		header := make([]byte, 4+2+8+4+32) // Magic(4) + Version(2) + Seq(8) + Len(4) + PrevHash(32)
@@ -65,7 +69,7 @@ func (j *BinaryJournal) recover() error {
 		if err != nil {
 			// If we read a partial header, it's a truncated tail. We stop here and truncate.
 			if err == io.ErrUnexpectedEOF {
-				if err := j.truncateToCurrentOffset(); err != nil {
+				if err := j.file.Truncate(lastGoodOffset); err != nil {
 					return err
 				}
 				break
@@ -95,7 +99,10 @@ func (j *BinaryJournal) recover() error {
 		_, err = io.ReadFull(j.file, payload)
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				if err := j.truncateToCurrentOffset(); err != nil { return err }; break
+				if err := j.file.Truncate(lastGoodOffset); err != nil {
+					return err
+				}
+				break
 			}
 			return err
 		}
@@ -104,7 +111,10 @@ func (j *BinaryJournal) recover() error {
 		_, err = io.ReadFull(j.file, checksum[:])
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				if err := j.truncateToCurrentOffset(); err != nil { return err }; break
+				if err := j.file.Truncate(lastGoodOffset); err != nil {
+					return err
+				}
+				break
 			}
 			return err
 		}
@@ -126,6 +136,10 @@ func (j *BinaryJournal) recover() error {
 
 		lastSeq = seq
 		lastHash = computed
+		lastGoodOffset, err = j.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
 	}
 
 	j.nextSeq = lastSeq + 1

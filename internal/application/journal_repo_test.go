@@ -2,11 +2,64 @@ package application
 
 import (
 	"context"
-	"path/filepath"
-	"testing"
+	"encoding/json"
 	"homebase/internal/domain"
 	"homebase/internal/journal"
+	"path/filepath"
+	"testing"
 )
+
+func TestJournalRepo_MixedEnvelopeAndLegacyReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.journal")
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewJournalAttemptRepository(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aid, _ := domain.ParseAttemptID("mixed-records")
+	if _, err := repo.Append(context.Background(), aid, 0, []domain.Event{}); err != nil {
+		t.Fatalf("append enveloped event batch: %v", err)
+	}
+
+	legacy, err := json.Marshal(EventBatch{AttemptID: aid.String(), Version: 1, Events: []TypedEvent{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append(legacy); err != nil {
+		t.Fatalf("append legacy event batch: %v", err)
+	}
+	decision, err := journal.EncodeRecord(journal.RecordKindDecisionRecord, []byte(`{"id":"decision-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append(decision); err != nil {
+		t.Fatalf("append decision record: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	j2, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j2.Close()
+	repo2, err := NewJournalAttemptRepository(j2)
+	if err != nil {
+		t.Fatalf("mixed-format reopen rejected valid records: %v", err)
+	}
+	_, version, err := repo2.Load(context.Background(), aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 {
+		t.Fatalf("replayed version = %d, want 2 (enveloped + legacy EventBatch)", version)
+	}
+}
 
 func setupRepo(t *testing.T, path string) (*JournalAttemptRepository, func()) {
 	j, err := journal.OpenBinaryJournal(path)
@@ -133,7 +186,7 @@ func TestJournalRepo_UnsupportedEvent(t *testing.T) {
 
 	aid, _ := domain.ParseAttemptID("test-unsupported")
 	ctx := context.Background()
-	
+
 	_, err := repo.Append(ctx, aid, 0, []domain.Event{nil})
 	if err == nil || err.Error() != "unsupported event type" {
 		t.Fatalf("expected unsupported event type error, got %v", err)

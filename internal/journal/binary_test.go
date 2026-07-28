@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,7 +46,7 @@ func TestBinaryJournal_AppendAndMonotonic(t *testing.T) {
 func TestBinaryJournal_Replay(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "replay.journal")
-	
+
 	j1, _ := OpenBinaryJournal(path)
 	j1.Append([]byte(`"event1"`))
 	j1.Append([]byte(`"event2"`))
@@ -79,7 +80,7 @@ func TestBinaryJournal_Replay(t *testing.T) {
 func TestBinaryJournal_CorruptionDetection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corrupt.journal")
-	
+
 	j, _ := OpenBinaryJournal(path)
 	j.Append([]byte(`"valid_payload"`))
 	j.Close()
@@ -97,7 +98,7 @@ func TestBinaryJournal_CorruptionDetection(t *testing.T) {
 func TestBinaryJournal_TruncatedTail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trunc.journal")
-	
+
 	j, _ := OpenBinaryJournal(path)
 	j.Append([]byte(`"event1"`))
 	j.Close()
@@ -116,5 +117,60 @@ func TestBinaryJournal_TruncatedTail(t *testing.T) {
 	if j2.nextSeq != 2 {
 		t.Fatalf("expected nextSeq 2, got %d", j2.nextSeq)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != int64(50+len([]byte(`"event1"`))+32) {
+		t.Fatalf("recovery left truncated bytes in journal: size=%d", info.Size())
+	}
 	j2.Close()
+}
+
+func TestBinaryJournal_TruncatedPayloadTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trunc-payload.journal")
+	j, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append([]byte(`"event1"`)); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	valid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 50)
+	copy(header, MagicBytes)
+	binary.BigEndian.PutUint16(header[4:6], FormatVersion)
+	binary.BigEndian.PutUint64(header[6:14], 2)
+	binary.BigEndian.PutUint32(header[14:18], 4)
+	copy(header[18:50], valid[len(valid)-32:])
+	if _, err := f.Write(append(header, []byte("x")...)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	j2, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatalf("payload-tail recovery failed: %v", err)
+	}
+	defer j2.Close()
+	if j2.nextSeq != 2 {
+		t.Fatalf("expected nextSeq 2 after payload-tail recovery, got %d", j2.nextSeq)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != int64(50+len([]byte(`"event1"`))+32) {
+		t.Fatalf("payload-tail recovery left truncated bytes: size=%d", info.Size())
+	}
 }
