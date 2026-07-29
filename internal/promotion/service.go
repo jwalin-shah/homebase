@@ -221,7 +221,7 @@ func (s *Service) Promote(ctx context.Context, rawCase, detachedSignature []byte
 	approval := caseValue.Approvals[0]
 	key := nonceKey(approval.Principal, approval.Nonce)
 	if previous, ok := s.byNonce[key]; ok {
-		if previous.DecisionID == caseValue.Candidate.DecisionID && previous.PropositionHash == caseValue.Candidate.PropositionHash && previous.ContextDigest == caseValue.Candidate.ContextDigest {
+		if previous.CaseID == caseValue.CaseID && previous.TranscriptDigest == transcriptDigest && previous.ApprovalID == approval.ApprovalID && previous.DecisionID == caseValue.Candidate.DecisionID && previous.PropositionHash == caseValue.Candidate.PropositionHash && previous.ContextDigest == caseValue.Candidate.ContextDigest {
 			outcome.Accepted = true
 			outcome.Existing = true
 			outcome.Receipt = &previous
@@ -287,7 +287,7 @@ func (s *Service) signReceipt(receipt *Receipt) error {
 }
 
 func (s *Service) verifyReceipt(receipt Receipt, decision, evidence records.Record) error {
-	if receipt.Version != "1" || receipt.ReceiptID == "" || receipt.CaseID == "" || receipt.Principal == "" || receipt.DecisionID != decision.ID || receipt.EvidenceID != evidence.ID || receipt.DecisionHash != decision.ContentHash || receipt.EvidenceHash != evidence.ContentHash || !validHash(receipt.TranscriptDigest) || !validHash(receipt.PropositionHash) || !validHash(receipt.ContextDigest) || !validHash(receipt.DecisionHash) || !validHash(receipt.EvidenceHash) || receipt.ApprovalID == "" || receipt.Nonce == "" || !validTime(receipt.EvaluatedAt) || receipt.Signature == "" {
+	if receipt.Version != "1" || receipt.ReceiptID == "" || receipt.CaseID == "" || receipt.Principal == "" || receipt.Principal != decision.Source.ID || decision.Source.Role != "captain" || receipt.DecisionID != decision.ID || receipt.EvidenceID != evidence.ID || receipt.DecisionHash != decision.ContentHash || receipt.EvidenceHash != evidence.ContentHash || !validHash(receipt.TranscriptDigest) || !validHash(receipt.PropositionHash) || !validHash(receipt.ContextDigest) || !validHash(receipt.DecisionHash) || !validHash(receipt.EvidenceHash) || receipt.ApprovalID == "" || receipt.Nonce == "" || !validTime(receipt.EvaluatedAt) || receipt.Signature == "" {
 		return errors.New("receipt does not bind its committed records")
 	}
 	signature, err := hex.DecodeString(receipt.Signature)
@@ -496,6 +496,12 @@ func validateCase(raw []byte, now time.Time) (Case, []string) {
 			}
 			if approval.Confirmation.DecisionID != value.Candidate.DecisionID || approval.Confirmation.OptionID != value.Candidate.OptionID || approval.Confirmation.Scope != value.Candidate.Scope || approval.Confirmation.Proposition != value.Candidate.Proposition {
 				found = append(found, "approval_confirmation_mismatch")
+			}
+			confirmationFields, confirmationErr := strictFields(fields["confirmation"])
+			if confirmationErr != nil {
+				found = append(found, "invalid_approval_confirmation_fields")
+			} else {
+				checkExact(confirmationFields, []string{"decision_id", "option_id", "scope", "proposition"}, []string{"decision_id", "option_id", "scope", "proposition"}, &found, "approval_confirmation")
 			}
 			if approval.ApprovalID != value.Candidate.ApprovalID || approval.DecisionID != value.Candidate.DecisionID || approval.OptionID != value.Candidate.OptionID || approval.PropositionHash != value.Candidate.PropositionHash || approval.ContextDigest != value.Candidate.ContextDigest {
 				found = append(found, "approval_candidate_mismatch")
