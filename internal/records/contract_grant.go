@@ -1,8 +1,8 @@
 package records
 
-// This file owns the authenticated, atomic Contract + CapabilityGrant
-// admission boundary. A worker/Bridge may consume the pair, but cannot mint
-// either authority record.
+// This file owns the authenticated, atomic Specification + Contract +
+// CapabilityGrant admission boundary. A worker/Bridge may consume the pair,
+// but cannot mint either authority record or bypass specification approval.
 
 import (
 	"bytes"
@@ -12,15 +12,17 @@ import (
 )
 
 type ContractGrantCommitResult struct {
-	Sequence uint64
-	Existing bool
-	Contract Record
-	Grant    Record
+	Sequence      uint64
+	Existing      bool
+	Specification Record
+	Contract      Record
+	Grant         Record
 }
 
 type contractGrantCommit struct {
-	Contract json.RawMessage `json:"contract"`
-	Grant    json.RawMessage `json:"grant"`
+	Specification json.RawMessage `json:"specification"`
+	Contract      json.RawMessage `json:"contract"`
+	Grant         json.RawMessage `json:"grant"`
 }
 
 type storedContractGrant struct {
@@ -31,34 +33,38 @@ type storedContractGrant struct {
 }
 
 type preparedContractGrant struct {
-	canonical         []byte
-	contractCanonical []byte
-	grantCanonical    []byte
-	contract          Record
-	grant             Record
+	canonical              []byte
+	specificationCanonical []byte
+	contractCanonical      []byte
+	grantCanonical         []byte
+	specification          Record
+	contract               Record
+	grant                  Record
 }
 
-// AppendContractAndGrant persists the approved task contract and its scoped
-// capability grant in one journal entry. The caller must already have
-// authenticated the owner authority; this package enforces the record schema,
-// lineage, and atomic/idempotent storage semantics.
-func (s *Store) AppendContractAndGrant(contractRaw, grantRaw []byte) (ContractGrantCommitResult, error) {
+// AppendContractAndGrant persists the captain-approved specification, task
+// contract, and scoped capability grant in one journal entry. The caller must
+// already have authenticated the owner authority; this package enforces the
+// specification approval chain, record schema, lineage, and atomic/idempotent
+// storage semantics.
+func (s *Store) AppendContractAndGrant(specificationRaw, contractRaw, grantRaw []byte) (ContractGrantCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureHealthy(); err != nil {
 		return ContractGrantCommitResult{}, err
 	}
-	prepared, err := s.prepareContractGrantCommit(contractRaw, grantRaw, true)
+	prepared, err := s.prepareContractGrantCommit(specificationRaw, contractRaw, grantRaw, true)
 	if err != nil {
 		return ContractGrantCommitResult{}, err
 	}
 	if existing, ok := s.contractGrants[prepared.contract.ID]; ok {
 		if bytes.Equal(existing.canonical, prepared.canonical) {
 			return ContractGrantCommitResult{
-				Sequence: existing.sequence,
-				Existing: true,
-				Contract: prepared.contract,
-				Grant:    prepared.grant,
+				Sequence:      existing.sequence,
+				Existing:      true,
+				Specification: prepared.specification,
+				Contract:      prepared.contract,
+				Grant:         prepared.grant,
 			}, nil
 		}
 		return ContractGrantCommitResult{}, fmt.Errorf("%w: contract %s", ErrConflict, prepared.contract.ID)
@@ -73,10 +79,17 @@ func (s *Store) AppendContractAndGrant(contractRaw, grantRaw []byte) (ContractGr
 		return ContractGrantCommitResult{}, s.poison(fmt.Errorf("append contract/grant commit: %w", err))
 	}
 	s.applyPreparedContractGrant(prepared, sequence)
-	return ContractGrantCommitResult{Sequence: sequence, Contract: prepared.contract, Grant: prepared.grant}, nil
+	return ContractGrantCommitResult{Sequence: sequence, Specification: prepared.specification, Contract: prepared.contract, Grant: prepared.grant}, nil
 }
 
-func (s *Store) prepareContractGrantCommit(contractRaw, grantRaw []byte, allowExisting bool) (preparedContractGrant, error) {
+func (s *Store) prepareContractGrantCommit(specificationRaw, contractRaw, grantRaw []byte, allowExisting bool) (preparedContractGrant, error) {
+	specification, specificationCanonical, err := parseAndValidate(specificationRaw)
+	if err != nil {
+		return preparedContractGrant{}, err
+	}
+	if specification.Kind != "Specification" {
+		return preparedContractGrant{}, invalid("contract/grant commit specification must have kind Specification")
+	}
 	contract, contractCanonical, err := parseAndValidate(contractRaw)
 	if err != nil {
 		return preparedContractGrant{}, err
@@ -105,6 +118,16 @@ func (s *Store) prepareContractGrantCommit(contractRaw, grantRaw []byte, allowEx
 	}
 
 	candidate := s.cloneForVerification()
+	if existing, ok := candidate.records[specification.ID]; ok {
+		if !allowExisting || !bytes.Equal(existing.canonical, specificationCanonical) {
+			return preparedContractGrant{}, fmt.Errorf("%w: specification %s", ErrConflict, specification.ID)
+		}
+	} else {
+		if err := candidate.validateReferences(specification); err != nil {
+			return preparedContractGrant{}, err
+		}
+		candidate.records[specification.ID] = storedRecord{record: specification, canonical: specificationCanonical}
+	}
 	if existing, ok := candidate.records[contract.ID]; ok {
 		if !allowExisting || !bytes.Equal(existing.canonical, contractCanonical) {
 			return preparedContractGrant{}, fmt.Errorf("%w: contract %s", ErrConflict, contract.ID)
@@ -125,7 +148,7 @@ func (s *Store) prepareContractGrantCommit(contractRaw, grantRaw []byte, allowEx
 		}
 		candidate.records[grant.ID] = storedRecord{record: grant, canonical: grantCanonical}
 	}
-	commitRaw, err := json.Marshal(contractGrantCommit{Contract: contractCanonical, Grant: grantCanonical})
+	commitRaw, err := json.Marshal(contractGrantCommit{Specification: specificationCanonical, Contract: contractCanonical, Grant: grantCanonical})
 	if err != nil {
 		return preparedContractGrant{}, fmt.Errorf("encode contract/grant commit: %w", err)
 	}
@@ -134,12 +157,14 @@ func (s *Store) prepareContractGrantCommit(contractRaw, grantRaw []byte, allowEx
 		return preparedContractGrant{}, fmt.Errorf("canonicalize contract/grant commit: %w", err)
 	}
 	return preparedContractGrant{
-		canonical: canonical, contractCanonical: contractCanonical, grantCanonical: grantCanonical,
-		contract: contract, grant: grant,
+		canonical: canonical, specificationCanonical: specificationCanonical,
+		contractCanonical: contractCanonical, grantCanonical: grantCanonical,
+		specification: specification, contract: contract, grant: grant,
 	}, nil
 }
 
 func (s *Store) applyPreparedContractGrant(prepared preparedContractGrant, sequence uint64) {
+	s.records[prepared.specification.ID] = storedRecord{record: prepared.specification, canonical: prepared.specificationCanonical}
 	s.records[prepared.contract.ID] = storedRecord{record: prepared.contract, canonical: prepared.contractCanonical}
 	s.records[prepared.grant.ID] = storedRecord{record: prepared.grant, canonical: prepared.grantCanonical}
 	s.contractGrants[prepared.contract.ID] = storedContractGrant{
@@ -153,7 +178,7 @@ func (s *Store) replayContractGrantCommit(sequence uint64, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	prepared, err := s.prepareContractGrantCommit(commit.Contract, commit.Grant, true)
+	prepared, err := s.prepareContractGrantCommit(commit.Specification, commit.Contract, commit.Grant, true)
 	if err != nil {
 		return err
 	}
@@ -173,9 +198,13 @@ func decodeContractGrantCommit(raw []byte) (contractGrantCommit, error) {
 		return contractGrantCommit{}, invalid("contract/grant commit: %v", err)
 	}
 	for key := range fields {
-		if key != "contract" && key != "grant" {
+		if key != "specification" && key != "contract" && key != "grant" {
 			return contractGrantCommit{}, invalid("contract/grant commit has unknown field %q", key)
 		}
+	}
+	specificationRaw, ok := fields["specification"]
+	if !ok {
+		return contractGrantCommit{}, invalid("legacy ContractGrantCommit missing specification; migrate the journal before startup")
 	}
 	contractRaw, ok := fields["contract"]
 	if !ok {
@@ -185,6 +214,10 @@ func decodeContractGrantCommit(raw []byte) (contractGrantCommit, error) {
 	if !ok {
 		return contractGrantCommit{}, invalid("contract/grant commit missing grant")
 	}
+	specificationCanonical, err := CanonicalJSONValue(specificationRaw)
+	if err != nil {
+		return contractGrantCommit{}, invalid("contract/grant commit specification: %v", err)
+	}
 	contractCanonical, err := CanonicalJSONValue(contractRaw)
 	if err != nil {
 		return contractGrantCommit{}, invalid("contract/grant commit contract: %v", err)
@@ -193,5 +226,5 @@ func decodeContractGrantCommit(raw []byte) (contractGrantCommit, error) {
 	if err != nil {
 		return contractGrantCommit{}, invalid("contract/grant commit grant: %v", err)
 	}
-	return contractGrantCommit{Contract: contractCanonical, Grant: grantCanonical}, nil
+	return contractGrantCommit{Specification: specificationCanonical, Contract: contractCanonical, Grant: grantCanonical}, nil
 }

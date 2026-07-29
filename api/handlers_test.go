@@ -81,6 +81,12 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := recordStore.Append(bridgeVerificationContract(t, "contract-1")); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +128,8 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if err := json.Unmarshal(response.Body.Bytes(), &firstSubmission); err != nil {
 		t.Fatalf("decode first Bridge append response: %v", err)
 	}
-	if got := len(recordStore.List()); got != 5 {
-		t.Fatalf("record count after Bridge append = %d, want 5", got)
+	if got := len(recordStore.List()); got != 7 {
+		t.Fatalf("record count after Bridge append = %d, want 7", got)
 	}
 
 	// Treat the first response as lost. The client may safely replay the exact
@@ -148,8 +154,8 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if !replaySubmission.Existing || replaySubmission.ReceiptID != firstSubmission.ReceiptID || replaySubmission.Sequence != firstSubmission.Sequence || replaySubmission.RecordCount != firstSubmission.RecordCount {
 		t.Fatalf("replay response = %+v, first response = %+v", replaySubmission, firstSubmission)
 	}
-	if got := len(recordStore.List()); got != 5 {
-		t.Fatalf("record count after lost-response replay = %d, want unchanged 5", got)
+	if got := len(recordStore.List()); got != 7 {
+		t.Fatalf("record count after lost-response replay = %d, want unchanged 7", got)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
@@ -177,14 +183,18 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
+		t.Fatal(err)
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
 	bundle := mustJSON(t, map[string]any{
-		"contract": json.RawMessage(bridgeContract(t, "contract-1")),
-		"grant":    json.RawMessage(bridgeGrant(t, "grant-1", "contract-1")),
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"contract":      json.RawMessage(bridgeContract(t, "contract-1")),
+		"grant":         json.RawMessage(bridgeGrant(t, "grant-1", "contract-1")),
 	})
 	sign := func(value []byte) string {
 		canonical, err := records.CanonicalJSONValue(value)
@@ -200,8 +210,8 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 	if response.Code != http.StatusCreated {
 		t.Fatalf("first Contract/Grant status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if got := len(recordStore.List()); got != 2 {
-		t.Fatalf("record count after Contract/Grant append = %d, want 2", got)
+	if got := len(recordStore.List()); got != 4 {
+		t.Fatalf("record count after Specification/Contract/Grant append = %d, want 4", got)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants", bytes.NewReader(bundle))
@@ -236,6 +246,12 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := recordStore.Append(bridgeContract(t, "contract-1")); err != nil {
 		t.Fatal(err)
 	}
@@ -251,12 +267,15 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 		t.Fatal(err)
 	}
 	server := NewServerWithAuthoritiesAndAdmissionResponse(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, nil, public, responsePrivate)
+	specification := decodeObject(t, bridgeSpecification(t))
 	check := mustJSON(t, map[string]any{
 		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "task-1", "worker_id": "worker-1",
 		"repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
 		"acceptance": []string{"go test ./..."}, "commands": []string{"go test ./..."},
-		"context_hash": hex.EncodeToString(make([]byte, 32)), "verifier_id": "verifier-1", "idempotency_key": "idem-1",
+		"context_hash":     hex.EncodeToString(make([]byte, 32)),
+		"specification_id": specification["id"], "specification_digest": specification["content_hash"],
+		"verifier_id": "verifier-1", "idempotency_key": "idem-1",
 	})
 	sign := func(raw []byte) string {
 		canonical, err := records.CanonicalJSONValue(raw)
@@ -288,7 +307,9 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 		"repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
 		"acceptance": []string{"go test ./..."}, "commands": []string{"go test ./..."},
-		"context_hash": hex.EncodeToString(make([]byte, 32)), "verifier_id": "verifier-1", "idempotency_key": "idem-1",
+		"context_hash":     hex.EncodeToString(make([]byte, 32)),
+		"specification_id": specification["id"], "specification_digest": specification["content_hash"],
+		"verifier_id": "verifier-1", "idempotency_key": "idem-1",
 	})
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(wrongScope))
 	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(wrongScope))
@@ -367,16 +388,21 @@ func bridgeReceipt(t *testing.T) []byte {
 
 func bridgeContract(t *testing.T, id string) []byte {
 	t.Helper()
+	specification := decodeObject(t, bridgeSpecification(t))
+	decision := decodeObject(t, bridgeApprovalDecision(t))
+	specificationID := specification["id"].(string)
+	specificationDigest := specification["content_hash"].(string)
 	payload := map[string]any{
 		"task_id": "task-1", "repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-12-31T00:00:00Z",
 		"idempotency_key": "idem-1", "worker_id": "worker-1", "verifier_id": "verifier-1",
 		"acceptance": []string{"go test ./..."}, "publication": "prohibited",
+		"specification_id": specificationID, "specification_digest": specificationDigest,
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "Contract", "version": "1", "id": id,
-		"source_refs":  []any{map[string]any{"kind": "decision", "id": "decision-1"}},
+		"source_refs":  []any{map[string]any{"kind": "decision", "id": decision["id"], "content_hash": decision["content_hash"]}, map[string]any{"kind": "specification", "id": specificationID, "content_hash": specificationDigest}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
 		"authority_class": records.AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "approved", "source": map[string]any{"id": "homebase", "role": "homebase"}, "payload": payload,
@@ -404,11 +430,15 @@ func canonicalHash(t *testing.T, value any) (string, error) {
 
 func bridgeGrant(t *testing.T, id, contractID string) []byte {
 	t.Helper()
+	specification := decodeObject(t, bridgeSpecification(t))
+	specificationID := specification["id"].(string)
+	specificationDigest := specification["content_hash"].(string)
 	payload := map[string]any{
 		"grant_id": id, "contract_id": contractID, "task_id": "task-1", "worker_id": "worker-1",
 		"allowed_paths": []string{"internal/"}, "commands": []string{"go test ./..."},
 		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-12-31T00:00:00Z",
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "idempotency_key": "idem-1", "effect_id": "effect-1",
+		"specification_id": specificationID, "specification_digest": specificationDigest,
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "CapabilityGrant", "version": "1", "id": id,
@@ -440,6 +470,50 @@ func payloadHash(t *testing.T, payload any) string {
 	t.Helper()
 	digest := sha256.Sum256(mustJSON(t, payload))
 	return hex.EncodeToString(digest[:])
+}
+
+func bridgeApprovalDecision(t *testing.T) []byte {
+	t.Helper()
+	specification := decodeObject(t, bridgeSpecification(t))
+	payload := map[string]any{
+		"decision":   "approve specification spec:homebase:api-test:v1",
+		"scope":      "running-machine contract admission",
+		"decided_by": "captain",
+		"specification_ref": map[string]any{
+			"kind":         "specification",
+			"id":           specification["id"],
+			"content_hash": specification["content_hash"],
+		},
+	}
+	return mustJSON(t, map[string]any{
+		"kind": "Decision", "version": "1", "id": "decision:spec-api-test",
+		"source_refs":  []any{map[string]any{"kind": "document", "id": "captain-approval"}},
+		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
+		"authority_class": records.AuthorityHumanDecision,
+		"freshness":       map[string]any{"mode": "immutable", "valid_until": nil}, "status": "approved",
+		"source": map[string]any{"id": "captain", "role": "captain"}, "payload": payload,
+	})
+}
+
+func bridgeSpecification(t *testing.T) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"purpose":   "test approved specification",
+		"scope":     map[string]any{"systems": []string{"HomeBase"}, "effects": []string{"admission"}},
+		"non_goals": []string{"production certification"}, "requirements": []any{},
+		"proof_obligations": []any{}, "golden_scenarios": []any{}, "context_sources": []any{}, "assumptions": []any{},
+		"admission_policy": map[string]any{"requires_human_approval": true, "fail_closed_on_open_obligation": true, "worker_may_authorize": false},
+		"approval_ref":     map[string]any{"kind": "decision", "id": "decision:spec-api-test"},
+		"revision_policy":  "new ID and digest for every revision",
+	}
+	return mustJSON(t, map[string]any{
+		"kind": "Specification", "version": "1", "id": "spec:homebase:api-test:v1",
+		"source_refs":  []any{map[string]any{"kind": "document", "id": "api-test-spec"}},
+		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
+		"authority_class": records.AuthorityHumanDecision,
+		"freshness":       map[string]any{"mode": "immutable", "valid_until": nil}, "status": "approved",
+		"source": map[string]any{"id": "captain", "role": "captain"}, "payload": payload,
+	})
 }
 
 func decodeObject(t *testing.T, raw []byte) map[string]any {

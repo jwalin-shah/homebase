@@ -164,6 +164,7 @@ func TestCrossRecordReferencesAndIdempotencyAreEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +192,7 @@ func TestVerificationReceiptReferencesVerifiedRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +220,7 @@ func TestVerificationReceiptRejectsMismatchedReferenceKindsAndLineage(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	for _, raw := range [][]byte{validContract(t, "contract-1"), validGrant(t, "grant-1", "contract-1", "idem-1"), validObservation(t, "observation-1", "grant-1"), validProof(t, "proof-1")} {
 		if _, err := store.Append(raw); err != nil {
 			t.Fatal(err)
@@ -333,16 +336,21 @@ func validVerificationReceipt(t *testing.T, id, payloadVerifierID, sourceID, tre
 
 func validContract(t *testing.T, id string) []byte {
 	t.Helper()
+	specification := decodeObject(t, validSpecification(t))
+	decision := decodeObject(t, validApprovalDecision(t))
+	specificationID := specification["id"].(string)
+	specificationDigest := specification["content_hash"].(string)
 	payload := map[string]any{
 		"task_id": "task-1", "repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-12-31T00:00:00Z",
 		"idempotency_key": "idem-1", "worker_id": "worker-1", "verifier_id": "verifier-1",
 		"acceptance": []string{"go test ./..."}, "publication": "prohibited",
+		"specification_id": specificationID, "specification_digest": specificationDigest,
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "Contract", "version": "1", "id": id,
-		"source_refs":  []any{map[string]any{"kind": "decision", "id": "decision-1"}},
+		"source_refs":  []any{map[string]any{"kind": "decision", "id": decision["id"], "content_hash": decision["content_hash"]}, map[string]any{"kind": "specification", "id": specificationID, "content_hash": specificationDigest}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
 		"authority_class": AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "approved", "source": map[string]any{"id": "homebase", "role": "homebase"}, "payload": payload,
@@ -351,11 +359,15 @@ func validContract(t *testing.T, id string) []byte {
 
 func validGrant(t *testing.T, id, contractID, idempotencyKey string) []byte {
 	t.Helper()
+	specification := decodeObject(t, validSpecification(t))
+	specificationID := specification["id"].(string)
+	specificationDigest := specification["content_hash"].(string)
 	payload := map[string]any{
 		"grant_id": id, "contract_id": contractID, "task_id": "task-1", "worker_id": "worker-1",
 		"allowed_paths": []string{"internal/"}, "commands": []string{"go test ./..."},
 		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-12-31T00:00:00Z",
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "idempotency_key": idempotencyKey, "effect_id": "effect-1",
+		"specification_id": specificationID, "specification_digest": specificationDigest,
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "CapabilityGrant", "version": "1", "id": id,
@@ -364,6 +376,61 @@ func validGrant(t *testing.T, id, contractID, idempotencyKey string) []byte {
 		"authority_class": AuthorityAuthoritative, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "active", "source": map[string]any{"id": "bridge", "role": "bridge"}, "payload": payload,
 	})
+}
+
+func validApprovalDecision(t *testing.T) []byte {
+	t.Helper()
+	specification := decodeObject(t, validSpecification(t))
+	payload := map[string]any{
+		"decision":   "approve specification spec:homebase:test:v1",
+		"scope":      "running-machine contract admission",
+		"decided_by": "captain",
+		"specification_ref": map[string]any{
+			"kind":         "specification",
+			"id":           specification["id"],
+			"content_hash": specification["content_hash"],
+		},
+	}
+	return mustJSON(t, map[string]any{
+		"kind": "Decision", "version": "1", "id": "decision:spec-homebase-test",
+		"source_refs":  []any{map[string]any{"kind": "document", "id": "captain-approval"}},
+		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
+		"authority_class": AuthorityHumanDecision,
+		"freshness":       map[string]any{"mode": "immutable", "valid_until": nil}, "status": "approved",
+		"source": map[string]any{"id": "captain", "role": "captain"}, "payload": payload,
+	})
+}
+
+func validSpecification(t *testing.T) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"purpose":      "test approved specification",
+		"scope":        map[string]any{"systems": []string{"HomeBase"}, "effects": []string{"admission"}},
+		"non_goals":    []string{"production certification"},
+		"requirements": []any{}, "proof_obligations": []any{}, "golden_scenarios": []any{},
+		"context_sources": []any{}, "assumptions": []any{},
+		"admission_policy": map[string]any{"requires_human_approval": true, "fail_closed_on_open_obligation": true, "worker_may_authorize": false},
+		"approval_ref":     map[string]any{"kind": "decision", "id": "decision:spec-homebase-test"},
+		"revision_policy":  "new ID and digest for every revision",
+	}
+	return mustJSON(t, map[string]any{
+		"kind": "Specification", "version": "1", "id": "spec:homebase:test:v1",
+		"source_refs":  []any{map[string]any{"kind": "document", "id": "test-spec"}},
+		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
+		"authority_class": AuthorityHumanDecision,
+		"freshness":       map[string]any{"mode": "immutable", "valid_until": nil}, "status": "approved",
+		"source": map[string]any{"id": "captain", "role": "captain"}, "payload": payload,
+	})
+}
+
+func appendApprovedSpecification(t *testing.T, store *Store) {
+	t.Helper()
+	if _, err := store.Append(validApprovalDecision(t)); err != nil {
+		t.Fatalf("append specification approval decision: %v", err)
+	}
+	if _, err := store.Append(validSpecification(t)); err != nil {
+		t.Fatalf("append approved specification: %v", err)
+	}
 }
 
 func validObservation(t *testing.T, id, grantID string) []byte {

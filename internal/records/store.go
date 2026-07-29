@@ -441,6 +441,14 @@ func (s *Store) validateReferences(record Record) error {
 		return invalid("%s payload: %v", record.Kind, err)
 	}
 	switch record.Kind {
+	case "Specification":
+		if err := s.validateSpecification(record, fields); err != nil {
+			return err
+		}
+	case "Contract":
+		if err := s.validateContractSpecification(record, fields); err != nil {
+			return err
+		}
 	case "CapabilityGrant":
 		contractID, _ := stringValue(fields["contract_id"])
 		contract, ok := s.records[contractID]
@@ -451,7 +459,7 @@ func (s *Store) validateReferences(record Record) error {
 		if err != nil {
 			return invalid("referenced Contract %q: %v", contractID, err)
 		}
-		for _, pair := range [][2]string{{"context_hash", "context_hash"}, {"task_id", "task_id"}, {"worker_id", "worker_id"}, {"idempotency_key", "idempotency_key"}} {
+		for _, pair := range [][2]string{{"context_hash", "context_hash"}, {"task_id", "task_id"}, {"worker_id", "worker_id"}, {"idempotency_key", "idempotency_key"}, {"specification_id", "specification_id"}, {"specification_digest", "specification_digest"}} {
 			grantValue, _ := stringValue(fields[pair[0]])
 			contractValue, _ := stringValue(contractFields[pair[1]])
 			if grantValue != contractValue {
@@ -582,6 +590,154 @@ func (s *Store) validateReferences(record Record) error {
 		}
 	}
 	return nil
+}
+
+// validateSpecification enforces the semantic authority boundary for an
+// upstream specification. A proposed specification may be stored as
+// evidence/provenance, but only a captain-approved specification with a
+// durable Decision reference can authorize a Contract.
+func (s *Store) validateSpecification(record Record, fields map[string]json.RawMessage) error {
+	if record.Status == "proposed" {
+		if record.AuthorityClass != AuthorityAgentProposal {
+			return invalid("proposed Specification requires agent_proposal authority")
+		}
+		return nil
+	}
+	if record.Status != "approved" {
+		return nil
+	}
+	if record.AuthorityClass != AuthorityHumanDecision || record.Source.Role != "captain" {
+		return invalid("approved Specification requires human_decision from captain")
+	}
+	approvalRaw, ok := fields["approval_ref"]
+	if !ok {
+		return invalid("approved Specification requires payload.approval_ref")
+	}
+	approval, err := parseDecisionApprovalRef(approvalRaw, "Specification approval_ref")
+	if err != nil {
+		return err
+	}
+	if approval.Kind != "decision" {
+		return invalid("Specification approval_ref must reference a decision")
+	}
+	decision, ok := s.records[approval.ID]
+	if !ok || decision.record.Kind != "Decision" {
+		return invalid("Specification approval_ref %q does not reference an existing Decision", approval.ID)
+	}
+	if decision.record.AuthorityClass != AuthorityHumanDecision || decision.record.Status != "approved" || decision.record.Source.Role != "captain" {
+		return invalid("Specification approval_ref %q is not a captain-approved Decision", approval.ID)
+	}
+	decisionFields, err := objectFields(decision.record.Payload)
+	if err != nil {
+		return invalid("approval Decision %q payload: %v", approval.ID, err)
+	}
+	specificationRefRaw, ok := decisionFields["specification_ref"]
+	if !ok {
+		return invalid("approval Decision %q requires payload.specification_ref", approval.ID)
+	}
+	specificationRef, err := parseRequiredSourceRef(specificationRefRaw, "approval Decision specification_ref")
+	if err != nil {
+		return err
+	}
+	if specificationRef.Kind != "specification" || specificationRef.ID != record.ID || specificationRef.ContentHash != record.ContentHash {
+		return invalid("approval Decision %q is not bound to Specification %q and its content hash", approval.ID, record.ID)
+	}
+	return nil
+}
+
+// validateContractSpecification resolves the exact specification named by a
+// Contract. Shape-valid identifiers are not enough: the record must exist,
+// its payload hash must match, its authority must be approved, and the
+// Contract envelope must carry the same hash-bound source reference.
+func (s *Store) validateContractSpecification(record Record, fields map[string]json.RawMessage) error {
+	specificationID, ok := stringValue(fields["specification_id"])
+	if !ok {
+		return invalid("Contract specification_id is required")
+	}
+	specificationDigest, ok := stringValue(fields["specification_digest"])
+	if !ok || !sha256Pattern.MatchString(specificationDigest) {
+		return invalid("Contract specification_digest must be a lowercase SHA-256 digest")
+	}
+	specification, ok := s.records[specificationID]
+	if !ok || specification.record.Kind != "Specification" {
+		return invalid("Contract specification_id %q does not reference an existing Specification", specificationID)
+	}
+	if specification.record.ContentHash != specificationDigest {
+		return invalid("Contract specification_digest does not match Specification %q", specificationID)
+	}
+	if specification.record.Status != "approved" || specification.record.AuthorityClass != AuthorityHumanDecision || specification.record.Source.Role != "captain" {
+		return invalid("Contract Specification %q is not captain-approved", specificationID)
+	}
+	specificationFields, err := objectFields(specification.record.Payload)
+	if err != nil {
+		return invalid("referenced Specification %q payload: %v", specificationID, err)
+	}
+	approval, err := parseDecisionApprovalRef(specificationFields["approval_ref"], "Specification approval_ref")
+	if err != nil {
+		return err
+	}
+	decisionRefFound := false
+	for _, ref := range record.SourceRefs {
+		if ref.Kind != "decision" {
+			continue
+		}
+		decision, ok := s.records[ref.ID]
+		if !ok || decision.record.Kind != "Decision" {
+			return invalid("Contract decision source_ref %q does not reference an existing Decision", ref.ID)
+		}
+		if ref.ContentHash != decision.record.ContentHash {
+			return invalid("Contract decision source_ref %q content_hash does not match", ref.ID)
+		}
+		if ref.ID == approval.ID {
+			decisionRefFound = true
+		}
+	}
+	if !decisionRefFound {
+		return invalid("Contract must include the Specification approval Decision source_ref")
+	}
+	found := false
+	for _, ref := range record.SourceRefs {
+		if ref.Kind != "specification" || ref.ID != specificationID {
+			continue
+		}
+		if ref.ContentHash != specificationDigest {
+			return invalid("Contract specification source_ref %q content_hash does not match", specificationID)
+		}
+		found = true
+	}
+	if !found {
+		return invalid("Contract must include a hash-bound specification source_ref")
+	}
+	return nil
+}
+
+func parseRequiredSourceRef(raw []byte, field string) (SourceRef, error) {
+	if err := requireSourceRef(raw, field); err != nil {
+		return SourceRef{}, invalid("%v", err)
+	}
+	var ref SourceRef
+	if err := json.Unmarshal(raw, &ref); err != nil || ref.Kind == "" || ref.ID == "" || !sha256Pattern.MatchString(ref.ContentHash) {
+		return SourceRef{}, invalid("%s requires kind, id, and content_hash", field)
+	}
+	return ref, nil
+}
+
+func parseDecisionApprovalRef(raw []byte, field string) (SourceRef, error) {
+	if err := requireSourceRef(raw, field); err != nil {
+		return SourceRef{}, invalid("%v", err)
+	}
+	var ref map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &ref); err != nil {
+		return SourceRef{}, invalid("%s must be an object", field)
+	}
+	if len(ref) != 2 {
+		return SourceRef{}, invalid("%s requires exactly kind and id; content_hash would create a circular approval binding", field)
+	}
+	var parsed SourceRef
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.Kind != "decision" || parsed.ID == "" || parsed.ContentHash != "" {
+		return SourceRef{}, invalid("%s requires kind=decision and id, without content_hash", field)
+	}
+	return parsed, nil
 }
 
 func validateVerificationFreshness(receiptFields, contractFields, grantFields map[string]json.RawMessage) error {
@@ -766,7 +922,7 @@ func (r Record) validate(fields map[string]json.RawMessage, payloadRaw []byte) e
 	if r.Kind == "" || r.Version == "" || r.ID == "" || r.ContentHash == "" || r.CapturedAt == "" || r.AuthorityClass == "" || r.Status == "" {
 		return invalid("required scalar is empty")
 	}
-	if !isOneOf(r.Kind, "Claim", "Evidence", "Decision", "Contract", "CapabilityGrant", "Observation", "Proposal", "Proof", "VerificationReceipt", "Challenge") {
+	if !isOneOf(r.Kind, "Claim", "Evidence", "Decision", "Contract", "CapabilityGrant", "Observation", "Proposal", "Proof", "VerificationReceipt", "Challenge", "Specification") {
 		return invalid("unsupported record kind %q", r.Kind)
 	}
 	if r.Version != "1" {
@@ -829,6 +985,17 @@ func (r Record) validate(fields map[string]json.RawMessage, payloadRaw []byte) e
 			return invalid("%s requires human_decision from captain, portfolio, or homebase", r.Kind)
 		}
 	}
+	if r.Kind == "Specification" {
+		if !isOneOf(r.Status, "proposed", "approved", "superseded", "challenged") {
+			return invalid("Specification has unsupported status %q", r.Status)
+		}
+		if r.Status == "proposed" && r.AuthorityClass != AuthorityAgentProposal {
+			return invalid("proposed Specification requires agent_proposal authority")
+		}
+		if r.Status == "approved" && (r.AuthorityClass != AuthorityHumanDecision || r.Source.Role != "captain") {
+			return invalid("approved Specification requires human_decision from captain")
+		}
+	}
 	if roles := expectedSourceRoles(r.Kind); len(roles) > 0 && !contains(roles, r.Source.Role) {
 		return invalid("%s requires source role in %v", r.Kind, roles)
 	}
@@ -875,13 +1042,14 @@ func validatePayload(kind, authority string, raw []byte) error {
 		"Claim":               {"statement", "subject_refs"},
 		"Evidence":            {"evidence_type", "subject_refs", "observed_digest"},
 		"Decision":            {"decision", "scope", "decided_by"},
-		"Contract":            {"task_id", "repository", "base_commit", "allowed_paths", "forbidden_paths", "context_hash", "context_valid_until", "idempotency_key", "worker_id", "verifier_id", "acceptance", "publication"},
-		"CapabilityGrant":     {"grant_id", "contract_id", "task_id", "worker_id", "allowed_paths", "commands", "issued_at", "expires_at", "context_hash", "idempotency_key", "effect_id"},
+		"Contract":            {"task_id", "repository", "base_commit", "allowed_paths", "forbidden_paths", "context_hash", "context_valid_until", "idempotency_key", "worker_id", "verifier_id", "acceptance", "publication", "specification_id", "specification_digest"},
+		"CapabilityGrant":     {"grant_id", "contract_id", "task_id", "worker_id", "allowed_paths", "commands", "issued_at", "expires_at", "context_hash", "idempotency_key", "effect_id", "specification_id", "specification_digest"},
 		"Observation":         {"task_id", "grant_id", "worker_id", "effect"},
 		"Proposal":            {"task_id", "worker_id", "proposal"},
 		"Proof":               {"proof_type", "proof_command", "result", "subject_refs", "verifier_id"},
 		"VerificationReceipt": {"task_id", "contract_id", "grant_id", "worker_id", "verifier_id", "tree_digest", "subject", "checks", "evidence_refs", "worker_claim_ref", "verified_at"},
 		"Challenge":           {"target_ref", "challenge_type", "reason", "raised_by"},
+		"Specification":       {"purpose", "scope", "non_goals", "requirements", "proof_obligations", "golden_scenarios", "context_sources", "assumptions", "admission_policy", "revision_policy"},
 	}[kind]
 	for key := range fields {
 		if !contains(required, key) && !allowedOptional(kind, key) {
@@ -897,6 +1065,9 @@ func validatePayload(kind, authority string, raw []byte) error {
 		return invalid("%s requires authority_class %q", kind, expected)
 	}
 	for _, key := range []string{"statement", "evidence_type", "decision", "scope", "decided_by", "task_id", "repository", "idempotency_key", "worker_id", "verifier_id", "proposal", "proof_type", "proof_command", "challenge_type", "reason", "raised_by", "grant_id", "contract_id", "effect_id"} {
+		if kind == "Specification" && key == "scope" {
+			continue
+		}
 		if rawValue, ok := fields[key]; ok {
 			if err := requireNonEmptyString(rawValue, key); err != nil {
 				return invalid("%s payload: %v", kind, err)
@@ -1124,6 +1295,8 @@ func expectedAuthority(kind string) string {
 		return AuthorityAgentProposal
 	case "Proof", "VerificationReceipt":
 		return AuthorityVerifiedEvidence
+	case "Specification":
+		return ""
 	}
 	return ""
 }
@@ -1140,16 +1313,24 @@ func expectedSourceRoles(kind string) []string {
 		return []string{"verifier", "axioms"}
 	case "VerificationReceipt":
 		return []string{"verifier"}
+	case "Specification":
+		return []string{"system", "captain", "portfolio", "knowledge_engine"}
 	default:
 		return nil
 	}
 }
 
 func allowedOptional(kind, key string) bool {
+	if kind == "Decision" && key == "specification_ref" {
+		return true
+	}
 	if kind == "Observation" && key == "effect" {
 		return true
 	}
 	if kind == "VerificationReceipt" && key == "attestation" {
+		return true
+	}
+	if kind == "Specification" && key == "approval_ref" {
 		return true
 	}
 	return false

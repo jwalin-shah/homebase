@@ -151,6 +151,7 @@ func TestProductionBridgeReceiptRetainsAttestationAcrossReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validBridgeContract(t, "contract-1", productionVerifierID)); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +266,7 @@ func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +307,7 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +320,7 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if err != nil {
 		t.Fatalf("first Bridge submission: %v", err)
 	}
-	if first.Existing || first.Sequence != 3 || first.Receipt.Kind != "VerificationReceipt" || len(first.Records) != 3 {
+	if first.Existing || first.Sequence != 5 || first.Receipt.Kind != "VerificationReceipt" || len(first.Records) != 3 {
 		t.Fatalf("unexpected first result: %+v", first)
 	}
 	second, err := store.AppendBridgeVerificationSubmission(raw)
@@ -327,8 +330,8 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if !second.Existing || second.Sequence != first.Sequence {
 		t.Fatalf("duplicate Bridge submission was not idempotent: %+v", second)
 	}
-	if got := len(store.List()); got != 5 {
-		t.Fatalf("record count after atomic submission = %d, want 5", got)
+	if got := len(store.List()); got != 7 {
+		t.Fatalf("record count after atomic submission = %d, want 7", got)
 	}
 	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "abcdefabcdefabcdefabcdefabcdefabcdefabcd")); err == nil {
 		t.Fatal("second tree for the same admitted task was accepted as another terminal receipt")
@@ -349,8 +352,8 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if _, err := reopened.Get(first.Receipt.ID); err != nil {
 		t.Fatalf("replayed receipt missing: %v", err)
 	}
-	if got := len(reopened.List()); got != 5 {
-		t.Fatalf("replayed record count = %d, want 5", got)
+	if got := len(reopened.List()); got != 7 {
+		t.Fatalf("replayed record count = %d, want 7", got)
 	}
 }
 
@@ -366,6 +369,7 @@ func TestBridgeVerificationRejectsExpiredAuthorityAtSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendApprovedSpecification(t, store)
 	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}

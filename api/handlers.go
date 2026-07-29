@@ -164,9 +164,9 @@ func (s *Server) HandleAppendExternalRecord(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// HandleAppendContractGrant admits the approved Contract and scoped
-// CapabilityGrant as one owner-signed journal commit. Bridge and workers have
-// no route that can create either record.
+// HandleAppendContractGrant admits the captain-approved Specification, the
+// Contract, and its scoped CapabilityGrant as one owner-signed journal commit.
+// Bridge and workers have no route that can create or replace any of them.
 func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -178,8 +178,9 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var request struct {
-		Contract json.RawMessage `json:"contract"`
-		Grant    json.RawMessage `json:"grant"`
+		Specification json.RawMessage `json:"specification"`
+		Contract      json.RawMessage `json:"contract"`
+		Grant         json.RawMessage `json:"grant"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -198,7 +199,7 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Contract authority signature failed", http.StatusUnauthorized)
 		return
 	}
-	result, err := s.recordStore.AppendContractAndGrant(request.Contract, request.Grant)
+	result, err := s.recordStore.AppendContractAndGrant(request.Specification, request.Contract, request.Grant)
 	if err != nil {
 		switch {
 		case errors.Is(err, records.ErrInvalidRecord):
@@ -236,19 +237,21 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var request struct {
-		ContractID     string   `json:"contract_id"`
-		GrantID        string   `json:"grant_id"`
-		TaskID         string   `json:"task_id"`
-		WorkerID       string   `json:"worker_id"`
-		Repository     string   `json:"repository"`
-		BaseCommit     string   `json:"base_commit"`
-		AllowedPaths   []string `json:"allowed_paths"`
-		ForbiddenPaths []string `json:"forbidden_paths"`
-		Acceptance     []string `json:"acceptance"`
-		Commands       []string `json:"commands"`
-		ContextHash    string   `json:"context_hash"`
-		VerifierID     string   `json:"verifier_id"`
-		IdempotencyKey string   `json:"idempotency_key"`
+		ContractID          string   `json:"contract_id"`
+		GrantID             string   `json:"grant_id"`
+		TaskID              string   `json:"task_id"`
+		WorkerID            string   `json:"worker_id"`
+		Repository          string   `json:"repository"`
+		BaseCommit          string   `json:"base_commit"`
+		AllowedPaths        []string `json:"allowed_paths"`
+		ForbiddenPaths      []string `json:"forbidden_paths"`
+		Acceptance          []string `json:"acceptance"`
+		Commands            []string `json:"commands"`
+		ContextHash         string   `json:"context_hash"`
+		SpecificationID     string   `json:"specification_id"`
+		SpecificationDigest string   `json:"specification_digest"`
+		VerifierID          string   `json:"verifier_id"`
+		IdempotencyKey      string   `json:"idempotency_key"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -293,6 +296,8 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		!sameStringField(contractFields, "repository", request.Repository) ||
 		!sameStringField(contractFields, "base_commit", request.BaseCommit) ||
 		!sameStringField(contractFields, "context_hash", request.ContextHash) ||
+		!sameStringField(contractFields, "specification_id", request.SpecificationID) ||
+		!sameStringField(contractFields, "specification_digest", request.SpecificationDigest) ||
 		!sameStringField(contractFields, "verifier_id", request.VerifierID) ||
 		!sameStringField(contractFields, "idempotency_key", request.IdempotencyKey) ||
 		!sameStringArray(contractFields, "allowed_paths", request.AllowedPaths) ||
@@ -307,6 +312,8 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		!sameStringField(grantFields, "task_id", request.TaskID) ||
 		!sameStringField(grantFields, "worker_id", request.WorkerID) ||
 		!sameStringField(grantFields, "context_hash", request.ContextHash) ||
+		!sameStringField(grantFields, "specification_id", request.SpecificationID) ||
+		!sameStringField(grantFields, "specification_digest", request.SpecificationDigest) ||
 		!sameStringField(grantFields, "idempotency_key", request.IdempotencyKey) ||
 		!sameStringArray(grantFields, "allowed_paths", request.AllowedPaths) ||
 		!sameStringArray(grantFields, "commands", request.Commands) {
