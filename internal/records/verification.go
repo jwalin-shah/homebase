@@ -488,6 +488,9 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 	if receipt.Kind != "VerificationReceipt" || receipt.Version != "1" || receipt.ID == "" || receipt.TaskID == "" || receipt.ContractID == "" || receipt.GrantID == "" || receipt.WorkerID == "" || receipt.VerifierID == "" || receipt.WorkerStatement == "" {
 		return bridgeReceipt{}, invalid("Bridge verification receipt has invalid identity fields")
 	}
+	if receipt.WorkerID == receipt.VerifierID {
+		return bridgeReceipt{}, invalid("Bridge verification receipt worker and verifier identities must be distinct")
+	}
 	if receipt.ID != "receipt:"+receipt.TaskID+":"+receipt.TreeSHA {
 		return bridgeReceipt{}, invalid("Bridge verification receipt id is not bound to task and tree")
 	}

@@ -99,6 +99,17 @@ func TestBridgeReceiptProvenanceIsAuthenticated(t *testing.T) {
 	}
 }
 
+func TestBridgeReceiptRejectsWorkerAsVerifier(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal(bridgeSubmission(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789"), &document); err != nil {
+		t.Fatal(err)
+	}
+	document["worker_id"] = "verifier-1"
+	if _, err := decodeBridgeReceipt(mustJSONBridge(t, document)); err == nil {
+		t.Fatal("decode accepted the worker identity as verifier")
+	}
+}
+
 func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
 	path := t.TempDir() + "/records.journal"
 	j, err := journal.OpenBinaryJournal(path)
