@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"homebase/internal/journal"
 	"testing"
+	"time"
 )
 
 func bridgeSubmission(t *testing.T, contractID, grantID, treeSHA string) []byte {
@@ -105,6 +106,35 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	}
 	if got := len(reopened.List()); got != 5 {
 		t.Fatalf("replayed record count = %d, want 5", got)
+	}
+}
+
+func TestBridgeVerificationRejectsExpiredAuthorityAtSubmission(t *testing.T) {
+	path := t.TempDir() + "/records.journal"
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	clock := func() time.Time { return time.Date(2026, 7, 28, 14, 0, 0, 0, time.UTC) }
+	store, err := NewStoreWithClock(j, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	expiredGrant := decodeObject(t, validGrant(t, "grant-1", "contract-1", "idem-1"))
+	grantPayload := expiredGrant["payload"].(map[string]any)
+	grantPayload["expires_at"] = "2026-07-28T13:00:00Z"
+	expiredGrant["content_hash"] = payloadHashBridge(t, grantPayload)
+	grantFreshness := expiredGrant["freshness"].(map[string]any)
+	grantFreshness["valid_until"] = "2026-07-28T13:00:00Z"
+	if _, err := store.Append(mustJSONBridge(t, expiredGrant)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmission(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789")); err == nil {
+		t.Fatal("expired authority was accepted at submission")
 	}
 }
 

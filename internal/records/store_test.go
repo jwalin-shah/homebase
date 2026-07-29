@@ -336,7 +336,7 @@ func validContract(t *testing.T, id string) []byte {
 	payload := map[string]any{
 		"task_id": "task-1", "repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
-		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-07-29T00:00:00Z",
+		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-12-31T00:00:00Z",
 		"idempotency_key": "idem-1", "worker_id": "worker-1", "verifier_id": "verifier-1",
 		"acceptance": []string{"go test ./..."}, "publication": "prohibited",
 	}
@@ -344,7 +344,7 @@ func validContract(t *testing.T, id string) []byte {
 		"kind": "Contract", "version": "1", "id": id,
 		"source_refs":  []any{map[string]any{"kind": "decision", "id": "decision-1"}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
-		"authority_class": AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-07-29T00:00:00Z"},
+		"authority_class": AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "approved", "source": map[string]any{"id": "homebase", "role": "homebase"}, "payload": payload,
 	})
 }
@@ -354,14 +354,14 @@ func validGrant(t *testing.T, id, contractID, idempotencyKey string) []byte {
 	payload := map[string]any{
 		"grant_id": id, "contract_id": contractID, "task_id": "task-1", "worker_id": "worker-1",
 		"allowed_paths": []string{"internal/"}, "commands": []string{"go test ./..."},
-		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-07-29T00:00:00Z",
+		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-12-31T00:00:00Z",
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "idempotency_key": idempotencyKey, "effect_id": "effect-1",
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "CapabilityGrant", "version": "1", "id": id,
 		"source_refs":  []any{map[string]any{"kind": "contract", "id": contractID}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
-		"authority_class": AuthorityAuthoritative, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-07-29T00:00:00Z"},
+		"authority_class": AuthorityAuthoritative, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "active", "source": map[string]any{"id": "bridge", "role": "bridge"}, "payload": payload,
 	})
 }

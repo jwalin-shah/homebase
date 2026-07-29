@@ -118,6 +118,7 @@ type Store struct {
 	verifications  map[string]storedVerification
 	contractGrants map[string]storedContractGrant
 	poisoned       error
+	now            func() time.Time
 }
 
 type storedRecord struct {
@@ -126,10 +127,24 @@ type storedRecord struct {
 }
 
 func NewStore(j *journal.BinaryJournal) (*Store, error) {
+	return newStore(j, time.Now)
+}
+
+// NewStoreWithClock is the deterministic constructor used by boundary tests.
+// Production uses NewStore, which binds submission freshness to HomeBase's
+// wall clock rather than a caller-provided timestamp.
+func NewStoreWithClock(j *journal.BinaryJournal, clock func() time.Time) (*Store, error) {
+	if clock == nil {
+		return nil, fmt.Errorf("%w: clock is required", ErrInvalidRecord)
+	}
+	return newStore(j, clock)
+}
+
+func newStore(j *journal.BinaryJournal, clock func() time.Time) (*Store, error) {
 	if j == nil {
 		return nil, fmt.Errorf("%w: journal is required", ErrInvalidRecord)
 	}
-	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification), contractGrants: make(map[string]storedContractGrant)}
+	s := &Store{journal: j, now: clock, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification), contractGrants: make(map[string]storedContractGrant)}
 	if err := j.Replay(func(seq uint64, payload []byte) error {
 		envelope, err := journal.DecodeRecord(payload)
 		if err != nil {

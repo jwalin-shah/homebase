@@ -99,6 +99,9 @@ func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationComm
 		}
 		return VerificationCommitResult{}, fmt.Errorf("%w: verification receipt %s", ErrConflict, receipt.ID)
 	}
+	if err := s.validateVerificationSubmissionFreshness(receipt); err != nil {
+		return VerificationCommitResult{}, err
+	}
 
 	recordsRaw, err := buildBridgeRecords(receipt, s)
 	if err != nil {
@@ -118,6 +121,60 @@ func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationComm
 	}
 	s.applyPreparedVerification(prepared, sequence)
 	return VerificationCommitResult{Sequence: sequence, Records: prepared.records, Receipt: prepared.receipt}, nil
+}
+
+// validateVerificationSubmissionFreshness checks the authority at the moment
+// HomeBase is asked to commit a new receipt. Historical records remain
+// replayable after expiry, but a new effect cannot use an expired grant or
+// contract. A small future-clock allowance handles bounded transport skew.
+func (s *Store) validateVerificationSubmissionFreshness(receipt bridgeReceipt) error {
+	contract, err := s.requireRecordID(receipt.ContractID, "contract_id", "Contract")
+	if err != nil {
+		return err
+	}
+	grant, err := s.requireRecordID(receipt.GrantID, "grant_id", "CapabilityGrant")
+	if err != nil {
+		return err
+	}
+	contractFields, err := objectFields(contract.record.Payload)
+	if err != nil {
+		return err
+	}
+	grantFields, err := objectFields(grant.record.Payload)
+	if err != nil {
+		return err
+	}
+	verifiedAt, err := time.Parse("2006-01-02T15:04:05Z", receipt.VerifiedAt)
+	if err != nil {
+		return invalid("VerificationReceipt verified_at: %v", err)
+	}
+	grantExpiresText, ok := stringValue(grantFields["expires_at"])
+	if !ok {
+		return invalid("CapabilityGrant expires_at is missing for receipt submission freshness")
+	}
+	grantExpires, err := time.Parse("2006-01-02T15:04:05Z", grantExpiresText)
+	if err != nil {
+		return invalid("CapabilityGrant expires_at: %v", err)
+	}
+	contextUntilText, ok := stringValue(contractFields["context_valid_until"])
+	if !ok {
+		return invalid("Contract context_valid_until is missing for receipt submission freshness")
+	}
+	contextUntil, err := time.Parse("2006-01-02T15:04:05Z", contextUntilText)
+	if err != nil {
+		return invalid("Contract context_valid_until: %v", err)
+	}
+	now := s.now().UTC()
+	if !now.Before(grantExpires) {
+		return invalid("CapabilityGrant expired before verification submission")
+	}
+	if !now.Before(contextUntil) {
+		return invalid("Contract context expired before verification submission")
+	}
+	if verifiedAt.After(now.Add(2 * time.Minute)) {
+		return invalid("VerificationReceipt verified_at is in the future at submission")
+	}
+	return nil
 }
 
 // verificationForAuthority enforces one terminal verifier receipt for one

@@ -105,6 +105,12 @@ func (r *JournalAttemptRepository) replay() error {
 					return err
 				}
 				event = e
+			case "EventConcluded":
+				var e domain.EventConcluded
+				if err := json.Unmarshal(te.Data, &e); err != nil {
+					return err
+				}
+				event = e
 			default:
 				return fmt.Errorf("unknown event type: %s", te.Type)
 			}
@@ -152,6 +158,8 @@ func (r *JournalAttemptRepository) Append(ctx context.Context, id domain.Attempt
 			t = "EventRecoveryDispatched"
 		case domain.EventRecoveryRejected:
 			t = "EventRecoveryRejected"
+		case domain.EventConcluded:
+			t = "EventConcluded"
 		default:
 			return currentVer, fmt.Errorf("unsupported event type")
 		}
