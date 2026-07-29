@@ -87,7 +87,11 @@ func main() {
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/decisions", server.HandleRecordDecision)
+	// The legacy decision endpoint is intentionally not mounted. It accepted
+	// caller-controlled decisions and signed them with a process-local key,
+	// which is not an authenticated authority boundary. Decisions now enter
+	// through owner-authenticated typed promotion or the future Knowledge
+	// Engine decision path.
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
 
