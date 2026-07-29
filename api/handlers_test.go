@@ -113,10 +113,21 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if response.Code != http.StatusCreated {
 		t.Fatalf("first Bridge append status = %d, body = %s", response.Code, response.Body.String())
 	}
+	var firstSubmission struct {
+		ReceiptID   string `json:"receipt_id"`
+		Existing    bool   `json:"existing"`
+		Sequence    uint64 `json:"sequence"`
+		RecordCount int    `json:"record_count"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &firstSubmission); err != nil {
+		t.Fatalf("decode first Bridge append response: %v", err)
+	}
 	if got := len(recordStore.List()); got != 5 {
 		t.Fatalf("record count after Bridge append = %d, want 5", got)
 	}
 
+	// Treat the first response as lost. The client may safely replay the exact
+	// signed receipt because HomeBase's journal identity is the receipt ID.
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
 	request.Header.Set("X-Bridge-Verification-Signature", sign(raw))
 	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
@@ -124,6 +135,21 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	server.HandleAppendBridgeVerification(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("duplicate Bridge append status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var replaySubmission struct {
+		ReceiptID   string `json:"receipt_id"`
+		Existing    bool   `json:"existing"`
+		Sequence    uint64 `json:"sequence"`
+		RecordCount int    `json:"record_count"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &replaySubmission); err != nil {
+		t.Fatalf("decode replay Bridge append response: %v", err)
+	}
+	if !replaySubmission.Existing || replaySubmission.ReceiptID != firstSubmission.ReceiptID || replaySubmission.Sequence != firstSubmission.Sequence || replaySubmission.RecordCount != firstSubmission.RecordCount {
+		t.Fatalf("replay response = %+v, first response = %+v", replaySubmission, firstSubmission)
+	}
+	if got := len(recordStore.List()); got != 5 {
+		t.Fatalf("record count after lost-response replay = %d, want unchanged 5", got)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
