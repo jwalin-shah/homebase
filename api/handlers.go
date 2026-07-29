@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"homebase/internal/application"
@@ -417,6 +418,22 @@ func (s *Server) HandleAppendBridgeVerification(w http.ResponseWriter, r *http.R
 	var extra json.RawMessage
 	if err := decoder.Decode(&extra); err != io.EOF {
 		http.Error(w, "request must contain one Bridge verification receipt", http.StatusBadRequest)
+		return
+	}
+	var envelope struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || strings.TrimSpace(envelope.ID) == "" {
+		http.Error(w, "Bridge verification receipt id is required", http.StatusBadRequest)
+		return
+	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		http.Error(w, "Idempotency-Key is required", http.StatusBadRequest)
+		return
+	}
+	if idempotencyKey != envelope.ID {
+		http.Error(w, "Idempotency-Key does not match receipt id", http.StatusConflict)
 		return
 	}
 	signature, err := decodeSignature(r.Header.Get("X-Bridge-Verification-Signature"))

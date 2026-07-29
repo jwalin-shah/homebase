@@ -107,6 +107,7 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
 	request.Header.Set("X-Bridge-Verification-Signature", sign(raw))
+	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response := httptest.NewRecorder()
 	server.HandleAppendBridgeVerification(response, request)
 	if response.Code != http.StatusCreated {
@@ -118,6 +119,7 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
 	request.Header.Set("X-Bridge-Verification-Signature", sign(raw))
+	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response = httptest.NewRecorder()
 	server.HandleAppendBridgeVerification(response, request)
 	if response.Code != http.StatusOK {
@@ -126,6 +128,7 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
 	request.Header.Set("X-Bridge-Verification-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response = httptest.NewRecorder()
 	server.HandleAppendBridgeVerification(response, request)
 	if response.Code != http.StatusUnauthorized {
