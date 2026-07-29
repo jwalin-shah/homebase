@@ -103,6 +103,7 @@ func main() {
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
 	mux.HandleFunc("/api/v1/contracts/grants", server.HandleAppendContractGrant)
+	mux.HandleFunc("/api/v1/contracts/grants/check", server.HandleCheckContractGrant)
 	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerification)
 
 	// 6. Start the Engine

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"homebase/internal/application"
 	"homebase/internal/domain"
@@ -192,9 +193,105 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleCheckContractGrant lets Bridge prove that the owner-authenticated
+// Contract + CapabilityGrant pair exists before it creates a worktree. This
+// endpoint is read-only: Bridge cannot mint, replace, or extend authority.
+func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.bridgeKey) != ed25519.PublicKeySize {
+		http.Error(w, "Bridge admission service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var request struct {
+		ContractID string `json:"contract_id"`
+		GrantID    string `json:"grant_id"`
+		TaskID     string `json:"task_id"`
+		WorkerID   string `json:"worker_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid Contract/Grant check JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one Contract/Grant check", http.StatusBadRequest)
+		return
+	}
+	canonical := rawCanonicalJSON(mustMarshalAuthorityRequest(request))
+	signature, err := decodeSignature(r.Header.Get("X-Bridge-Contract-Check-Signature"))
+	if err != nil || !ed25519.Verify(s.bridgeKey, canonical, signature) {
+		http.Error(w, "Bridge admission signature failed", http.StatusUnauthorized)
+		return
+	}
+	contract, err := s.recordStore.Get(request.ContractID)
+	if err != nil || contract.Kind != "Contract" {
+		http.Error(w, "Contract not found", http.StatusNotFound)
+		return
+	}
+	grant, err := s.recordStore.Get(request.GrantID)
+	if err != nil || grant.Kind != "CapabilityGrant" {
+		http.Error(w, "CapabilityGrant not found", http.StatusNotFound)
+		return
+	}
+	contractFields, err := objectFields(contract.Payload)
+	if err != nil || !sameStringField(contractFields, "task_id", request.TaskID) || !sameStringField(contractFields, "worker_id", request.WorkerID) {
+		http.Error(w, "Contract scope does not match request", http.StatusPreconditionFailed)
+		return
+	}
+	grantFields, err := objectFields(grant.Payload)
+	if err != nil || !sameStringField(grantFields, "contract_id", request.ContractID) || !sameStringField(grantFields, "task_id", request.TaskID) || !sameStringField(grantFields, "worker_id", request.WorkerID) {
+		http.Error(w, "CapabilityGrant scope does not match request", http.StatusPreconditionFailed)
+		return
+	}
+	expiresAt, ok := stringValue(grantFields["expires_at"])
+	if !ok {
+		http.Error(w, "CapabilityGrant expiry is invalid", http.StatusPreconditionFailed)
+		return
+	}
+	expires, err := time.Parse("2006-01-02T15:04:05Z", expiresAt)
+	if err != nil || !time.Now().UTC().Before(expires) {
+		http.Error(w, "CapabilityGrant is expired", http.StatusPreconditionFailed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"contract_id":  contract.ID,
+		"grant_id":     grant.ID,
+		"task_id":      request.TaskID,
+		"worker_id":    request.WorkerID,
+		"context_hash": contractFields["context_hash"],
+	})
+}
+
 func mustMarshalAuthorityRequest(value any) []byte {
 	raw, _ := json.Marshal(value)
 	return raw
+}
+
+func objectFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, errors.New("expected JSON object")
+	}
+	return fields, nil
+}
+
+func sameStringField(fields map[string]json.RawMessage, key, want string) bool {
+	got, ok := stringValue(fields[key])
+	return ok && got == want
+}
+
+func stringValue(raw json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+		return "", false
+	}
+	return value, true
 }
 
 // HandleAppendBridgeVerification accepts only a Bridge-signed transport

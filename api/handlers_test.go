@@ -186,6 +186,70 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 	}
 }
 
+func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeContract(t, "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithBridge(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, public)
+	check := mustJSON(t, map[string]any{
+		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "task-1", "worker_id": "worker-1",
+	})
+	sign := func(raw []byte) string {
+		canonical, err := records.CanonicalJSONValue(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(check))
+	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(check))
+	response := httptest.NewRecorder()
+	server.HandleCheckContractGrant(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid check status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	wrongScope := mustJSON(t, map[string]any{
+		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "other-task", "worker_id": "worker-1",
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(wrongScope))
+	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(wrongScope))
+	response = httptest.NewRecorder()
+	server.HandleCheckContractGrant(response, request)
+	if response.Code != http.StatusPreconditionFailed {
+		t.Fatalf("wrong scope status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(check))
+	request.Header.Set("X-Bridge-Contract-Check-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	response = httptest.NewRecorder()
+	server.HandleCheckContractGrant(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("bad signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func bridgeReceipt(t *testing.T) []byte {
 	t.Helper()
 	treeSHA := "0123456789012345678901234567890123456789"
@@ -242,14 +306,14 @@ func bridgeGrant(t *testing.T, id, contractID string) []byte {
 	payload := map[string]any{
 		"grant_id": id, "contract_id": contractID, "task_id": "task-1", "worker_id": "worker-1",
 		"allowed_paths": []string{"internal/"}, "commands": []string{"go test ./..."},
-		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-07-29T00:00:00Z",
+		"issued_at": "2026-07-28T00:00:00Z", "expires_at": "2026-12-31T00:00:00Z",
 		"context_hash": hex.EncodeToString(make([]byte, 32)), "idempotency_key": "idem-1", "effect_id": "effect-1",
 	}
 	return mustJSON(t, map[string]any{
 		"kind": "CapabilityGrant", "version": "1", "id": id,
 		"source_refs":  []any{map[string]any{"kind": "contract", "id": contractID}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
-		"authority_class": records.AuthorityAuthoritative, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-07-29T00:00:00Z"},
+		"authority_class": records.AuthorityAuthoritative, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "active", "source": map[string]any{"id": "bridge", "role": "bridge"}, "payload": payload,
 	})
 }
