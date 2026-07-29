@@ -84,6 +84,9 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if got := len(store.List()); got != 5 {
 		t.Fatalf("record count after atomic submission = %d, want 5", got)
 	}
+	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmission(t, "contract-1", "grant-1", "abcdefabcdefabcdefabcdefabcdefabcdefabcd")); err == nil {
+		t.Fatal("second tree for the same admitted task was accepted as another terminal receipt")
+	}
 	if err := j.Close(); err != nil {
 		t.Fatal(err)
 	}

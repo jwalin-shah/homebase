@@ -82,6 +82,9 @@ func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationComm
 	if err != nil {
 		return VerificationCommitResult{}, err
 	}
+	if existingID, existingTree, ok := s.verificationForAuthority(receipt.TaskID, receipt.ContractID, receipt.GrantID); ok && existingID != receipt.ID {
+		return VerificationCommitResult{}, fmt.Errorf("%w: task %q already has verification receipt %q for tree %q", ErrConflict, receipt.TaskID, existingID, existingTree)
+	}
 	if existing, ok := s.verifications[receipt.ID]; ok {
 		recordsRaw, err := buildBridgeRecords(receipt, s)
 		if err != nil {
@@ -115,6 +118,34 @@ func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationComm
 	}
 	s.applyPreparedVerification(prepared, sequence)
 	return VerificationCommitResult{Sequence: sequence, Records: prepared.records, Receipt: prepared.receipt}, nil
+}
+
+// verificationForAuthority enforces one terminal verifier receipt for one
+// admitted task/authority tuple. Receipt IDs include the tree, so indexing
+// only by receipt ID would incorrectly permit a second terminal receipt for a
+// different tree after a retry or stale worker.
+func (s *Store) verificationForAuthority(taskID, contractID, grantID string) (receiptID, treeSHA string, ok bool) {
+	for _, stored := range s.records {
+		if stored.record.Kind != "VerificationReceipt" {
+			continue
+		}
+		fields, err := objectFields(stored.record.Payload)
+		if err != nil {
+			continue
+		}
+		storedTask, _ := stringValue(fields["task_id"])
+		storedContract, _ := stringValue(fields["contract_id"])
+		storedGrant, _ := stringValue(fields["grant_id"])
+		if storedTask != taskID || storedContract != contractID || storedGrant != grantID {
+			continue
+		}
+		storedTree := ""
+		if subjectFields, subjectErr := objectFields(fields["subject"]); subjectErr == nil {
+			storedTree, _ = stringValue(subjectFields["name"])
+		}
+		return stored.record.ID, storedTree, true
+	}
+	return "", "", false
 }
 
 type preparedVerification struct {

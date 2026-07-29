@@ -91,7 +91,12 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServerWithBridge(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, public)
+	responsePublic, responsePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = responsePublic
+	server := NewServerWithAuthoritiesAndAdmissionResponse(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, nil, public, responsePrivate)
 	raw := bridgeReceipt(t)
 	sign := func(value []byte) string {
 		canonical, err := records.CanonicalJSONValue(value)
@@ -212,7 +217,11 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServerWithBridge(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, public)
+	_, responsePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthoritiesAndAdmissionResponse(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, nil, public, responsePrivate)
 	check := mustJSON(t, map[string]any{
 		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "task-1", "worker_id": "worker-1",
 		"repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",

@@ -92,7 +92,13 @@ func main() {
 	} else {
 		log.Printf("WARNING: Bridge verification unavailable: public key is not configured")
 	}
-	server := api.NewServerWithAuthorities(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic)
+	var admissionPrivate ed25519.PrivateKey
+	if admissionKey, admissionErr := loadKey("HOMEBASE_ADMISSION_PRIVATE_KEY_HEX", "HOMEBASE_ADMISSION_PRIVATE_KEY_FILE", ed25519.PrivateKeySize); admissionErr == nil {
+		admissionPrivate = ed25519.PrivateKey(admissionKey)
+	} else {
+		log.Printf("WARNING: Bridge admission responses unavailable: HomeBase response signing key is not configured")
+	}
+	server := api.NewServerWithAuthoritiesAndAdmissionResponse(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
@@ -132,6 +138,13 @@ func main() {
 func loadKey(hexEnv, fileEnv string, size int) ([]byte, error) {
 	value := strings.TrimSpace(os.Getenv(hexEnv))
 	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("key file must not be group/world-readable")
+		}
 		file, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err

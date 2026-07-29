@@ -512,6 +512,9 @@ func (s *Store) validateReferences(record Record) error {
 				return invalid("VerificationReceipt does not match CapabilityGrant %q field %s", grantID, field)
 			}
 		}
+		if err := validateVerificationFreshness(fields, contractFields, grantFields); err != nil {
+			return err
+		}
 
 		workerRef, workerRecord, err := s.resolveSourceRef(fields["worker_claim_ref"], "worker_claim_ref", "Claim", "Observation")
 		if err != nil {
@@ -562,6 +565,51 @@ func (s *Store) validateReferences(record Record) error {
 				return invalid("VerificationReceipt check evidence_ref %q is not listed in evidence_refs", ref.ID)
 			}
 		}
+	}
+	return nil
+}
+
+func validateVerificationFreshness(receiptFields, contractFields, grantFields map[string]json.RawMessage) error {
+	verifiedAtText, ok := stringValue(receiptFields["verified_at"])
+	if !ok {
+		return invalid("VerificationReceipt verified_at must be a non-empty timestamp")
+	}
+	verifiedAt, err := time.Parse("2006-01-02T15:04:05Z", verifiedAtText)
+	if err != nil {
+		return invalid("VerificationReceipt verified_at: %v", err)
+	}
+	issuedAtText, ok := stringValue(grantFields["issued_at"])
+	if !ok {
+		return invalid("CapabilityGrant issued_at is missing for receipt freshness")
+	}
+	issuedAt, err := time.Parse("2006-01-02T15:04:05Z", issuedAtText)
+	if err != nil {
+		return invalid("CapabilityGrant issued_at: %v", err)
+	}
+	expiresAtText, ok := stringValue(grantFields["expires_at"])
+	if !ok {
+		return invalid("CapabilityGrant expires_at is missing for receipt freshness")
+	}
+	expiresAt, err := time.Parse("2006-01-02T15:04:05Z", expiresAtText)
+	if err != nil {
+		return invalid("CapabilityGrant expires_at: %v", err)
+	}
+	contextValidUntilText, ok := stringValue(contractFields["context_valid_until"])
+	if !ok {
+		return invalid("Contract context_valid_until is missing for receipt freshness")
+	}
+	contextValidUntil, err := time.Parse("2006-01-02T15:04:05Z", contextValidUntilText)
+	if err != nil {
+		return invalid("Contract context_valid_until: %v", err)
+	}
+	if verifiedAt.Before(issuedAt) {
+		return invalid("VerificationReceipt verified_at precedes CapabilityGrant issued_at")
+	}
+	if verifiedAt.After(expiresAt) {
+		return invalid("VerificationReceipt verified_at is after CapabilityGrant expires_at")
+	}
+	if verifiedAt.After(contextValidUntil) {
+		return invalid("VerificationReceipt verified_at is after Contract context_valid_until")
 	}
 	return nil
 }

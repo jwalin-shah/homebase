@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,8 +31,13 @@ type Server struct {
 	promotion   *promotion.Service
 	bridgeKey   ed25519.PublicKey
 	contractKey ed25519.PublicKey
-	attemptSvc  *application.AttemptService
-	now         func() time.Time
+	// admissionPrivate signs the response to Bridge's read-only authority
+	// check. Request authentication alone is insufficient: without this key,
+	// a local proxy could forge a matching 200 response after the request was
+	// accepted by HomeBase.
+	admissionPrivate ed25519.PrivateKey
+	attemptSvc       *application.AttemptService
+	now              func() time.Time
 }
 
 // NewServer initializes the API.
@@ -82,6 +88,14 @@ func NewServerWithAuthorities(v *validation.Validator, s *signing.Signer, st *le
 	server := NewServerWithBridge(v, s, st, rs, bridgeKey)
 	server.promotion = ps
 	server.contractKey = append(ed25519.PublicKey(nil), contractKey...)
+	return server
+}
+
+// NewServerWithAuthoritiesAndAdmissionResponse adds the HomeBase-owned key
+// required to authenticate successful Bridge admission responses.
+func NewServerWithAuthoritiesAndAdmissionResponse(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey, admissionPrivate ed25519.PrivateKey) *Server {
+	server := NewServerWithAuthorities(v, s, st, rs, ps, contractKey, bridgeKey)
+	server.admissionPrivate = append(ed25519.PrivateKey(nil), admissionPrivate...)
 	return server
 }
 
@@ -203,7 +217,7 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.recordStore == nil || len(s.bridgeKey) != ed25519.PublicKeySize {
+	if s.recordStore == nil || len(s.bridgeKey) != ed25519.PublicKeySize || len(s.admissionPrivate) != ed25519.PrivateKeySize {
 		http.Error(w, "Bridge admission service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -306,13 +320,36 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		http.Error(w, "CapabilityGrant is expired", http.StatusPreconditionFailed)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	canonicalRequest := rawCanonicalJSON(mustMarshalAuthorityRequest(request))
+	requestHash := sha256.Sum256(canonicalRequest)
+	validUntil := expiresAt
+	if contextExpiry.Before(expires) {
+		validUntil = contextExpiry.Format("2006-01-02T15:04:05Z")
+	}
+	response := map[string]any{
 		"contract_id":  contract.ID,
 		"grant_id":     grant.ID,
 		"task_id":      request.TaskID,
 		"worker_id":    request.WorkerID,
 		"context_hash": contractFields["context_hash"],
-	})
+		"request_hash": hex.EncodeToString(requestHash[:]),
+		"valid_until":  validUntil,
+	}
+	rawResponse, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "failed to encode admission response", http.StatusInternalServerError)
+		return
+	}
+	canonicalResponse, err := records.CanonicalJSONValue(rawResponse)
+	if err != nil {
+		http.Error(w, "failed to canonicalize admission response", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-HomeBase-Admission-Signature", hex.EncodeToString(ed25519.Sign(s.admissionPrivate, canonicalResponse)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(rawResponse)
+	_, _ = w.Write([]byte("\n"))
 }
 
 func liveAuthorityFreshness(record records.Record, now time.Time) bool {
