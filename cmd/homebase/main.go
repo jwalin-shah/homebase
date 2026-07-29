@@ -83,7 +83,13 @@ func main() {
 	}
 
 	// 5. Initialize the API Server
-	server := api.NewServerWithPromotion(validator, signer, store, recordStore, promotionService)
+	var bridgePublic ed25519.PublicKey
+	if bridgeKey, bridgeErr := loadKey("HOMEBASE_BRIDGE_PUBLIC_KEY_HEX", "HOMEBASE_BRIDGE_PUBLIC_KEY_FILE", ed25519.PublicKeySize); bridgeErr == nil {
+		bridgePublic = ed25519.PublicKey(bridgeKey)
+	} else {
+		log.Printf("WARNING: Bridge verification unavailable: public key is not configured")
+	}
+	server := api.NewServerWithPromotionAndBridge(validator, signer, store, recordStore, promotionService, bridgePublic)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
@@ -94,6 +100,7 @@ func main() {
 	// Engine decision path.
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
+	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerification)
 
 	// 6. Start the Engine
 	port := os.Getenv("PORT")

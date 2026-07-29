@@ -110,10 +110,11 @@ type storedPromotion struct {
 }
 
 type Store struct {
-	mu         sync.Mutex
-	journal    *journal.BinaryJournal
-	records    map[string]storedRecord
-	promotions map[string]storedPromotion
+	mu            sync.Mutex
+	journal       *journal.BinaryJournal
+	records       map[string]storedRecord
+	promotions    map[string]storedPromotion
+	verifications map[string]storedVerification
 }
 
 type storedRecord struct {
@@ -125,7 +126,7 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 	if j == nil {
 		return nil, fmt.Errorf("%w: journal is required", ErrInvalidRecord)
 	}
-	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion)}
+	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification)}
 	if err := j.Replay(func(seq uint64, payload []byte) error {
 		envelope, err := journal.DecodeRecord(payload)
 		if err != nil {
@@ -163,8 +164,14 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 			s.promotions[decision.ID] = storedPromotion{decisionID: decision.ID, evidenceID: evidence.ID, canonical: commitCanonical, receipt: bytes.Clone(commit.Receipt), sequence: seq}
 			return nil
 		}
-		if envelope.Kind != journal.RecordKindSharedRecord {
+		if envelope.Kind == journal.RecordKindVerificationCommit {
+			if err := s.replayVerificationCommit(seq, envelope.Payload); err != nil {
+				return fmt.Errorf("verification commit journal entry %d: %w", seq, err)
+			}
 			return nil
+		}
+		if envelope.Kind != journal.RecordKindSharedRecord {
+			return fmt.Errorf("unsupported shared-record journal kind %q", envelope.Kind)
 		}
 		record, canonical, err := parseAndValidate(envelope.Payload)
 		if err != nil {

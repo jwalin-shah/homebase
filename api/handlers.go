@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,7 @@ type Server struct {
 	store       *ledger.Store
 	recordStore *records.Store
 	promotion   *promotion.Service
+	bridgeKey   ed25519.PublicKey
 	attemptSvc  *application.AttemptService
 }
 
@@ -44,11 +46,27 @@ func NewServerWithRecords(v *validation.Validator, s *signing.Signer, st *ledger
 	return server
 }
 
+// NewServerWithBridge adds the authenticated Bridge verification path. The
+// public key is copied so callers cannot mutate the verifier after startup.
+func NewServerWithBridge(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, bridgeKey ed25519.PublicKey) *Server {
+	server := NewServerWithRecords(v, s, st, rs)
+	server.bridgeKey = append(ed25519.PublicKey(nil), bridgeKey...)
+	return server
+}
+
 // NewServerWithPromotion adds the authenticated transcript-promotion path.
 // The caller must supply a service with persistent receipt keys and a real
 // transport authenticator; this constructor never manufactures authority.
 func NewServerWithPromotion(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service) *Server {
 	server := NewServerWithRecords(v, s, st, rs)
+	server.promotion = ps
+	return server
+}
+
+// NewServerWithPromotionAndBridge combines the two owner-specific typed
+// ingress paths without weakening either authentication boundary.
+func NewServerWithPromotionAndBridge(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, bridgeKey ed25519.PublicKey) *Server {
+	server := NewServerWithBridge(v, s, st, rs, bridgeKey)
 	server.promotion = ps
 	return server
 }
@@ -103,6 +121,70 @@ func (s *Server) HandleAppendExternalRecord(w http.ResponseWriter, r *http.Reque
 		"existing": result.Existing,
 		"sequence": result.Sequence,
 	})
+}
+
+// HandleAppendBridgeVerification accepts only a Bridge-signed transport
+// receipt. HomeBase then derives the Claim/Proof/VerificationReceipt records,
+// checks them against the pre-existing Contract and CapabilityGrant, and
+// commits the complete set in one journal entry.
+func (s *Server) HandleAppendBridgeVerification(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.bridgeKey) != ed25519.PublicKeySize {
+		http.Error(w, "Bridge verification service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var raw json.RawMessage
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&raw); err != nil {
+		http.Error(w, "invalid Bridge verification JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one Bridge verification receipt", http.StatusBadRequest)
+		return
+	}
+	signature, err := decodeSignature(r.Header.Get("X-Bridge-Verification-Signature"))
+	if err != nil || !ed25519.Verify(s.bridgeKey, rawCanonicalJSON(raw), signature) {
+		http.Error(w, "Bridge verification signature failed", http.StatusUnauthorized)
+		return
+	}
+	result, err := s.recordStore.AppendBridgeVerificationSubmission(raw)
+	if err != nil {
+		switch {
+		case errors.Is(err, records.ErrAuthorityRequired):
+			http.Error(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "failed to persist Bridge verification", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if result.Existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
+		"receipt_id":   result.Receipt.ID,
+		"existing":     result.Existing,
+		"sequence":     result.Sequence,
+		"record_count": len(result.Records),
+	})
+}
+
+func rawCanonicalJSON(raw []byte) []byte {
+	canonical, err := records.CanonicalJSONValue(raw)
+	if err != nil {
+		return nil
+	}
+	return canonical
 }
 
 // HandlePromoteTranscript admits a transcript-derived decision only through
