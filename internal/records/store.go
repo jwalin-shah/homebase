@@ -976,6 +976,29 @@ func validatePayload(kind, authority string, raw []byte) error {
 		}
 	}
 	if kind == "VerificationReceipt" {
+		verifierID, _ := stringValue(fields["verifier_id"])
+		if rawAttestation, ok := fields["attestation"]; ok {
+			attestation, err := objectFields(rawAttestation)
+			if err != nil {
+				return invalid("VerificationReceipt attestation: %v", err)
+			}
+			for key := range attestation {
+				if key != "scheme" && key != "key_id" && key != "signature" {
+					return invalid("VerificationReceipt attestation has unknown field %q", key)
+				}
+			}
+			if err := requireNonEmptyString(attestation["scheme"], "attestation.scheme"); err != nil {
+				return invalid("VerificationReceipt attestation: %v", err)
+			}
+			if err := requireNonEmptyString(attestation["key_id"], "attestation.key_id"); err != nil {
+				return invalid("VerificationReceipt attestation: %v", err)
+			}
+			if err := requireHexDigest(attestation["signature"], "attestation.signature", 128); err != nil {
+				return invalid("VerificationReceipt attestation: %v", err)
+			}
+		} else if verifierID == productionVerifierID {
+			return invalid("VerificationReceipt production verifier requires attestation")
+		}
 		for _, key := range []string{"tree_digest"} {
 			if err := requireSHA(fields[key], key); err != nil {
 				return invalid("VerificationReceipt payload: %v", err)
@@ -1051,7 +1074,7 @@ func validatePayload(kind, authority string, raw []byte) error {
 				if err := validateBridgeProvenance(provenance, subjectName); err != nil {
 					return invalid("VerificationReceipt check %d provenance: %v", i, err)
 				}
-			} else if receiptVerifierID, ok := stringValue(fields["verifier_id"]); ok && receiptVerifierID == "bridge:verifier" {
+			} else if receiptVerifierID, ok := stringValue(fields["verifier_id"]); ok && (receiptVerifierID == legacyVerifierID || receiptVerifierID == productionVerifierID) {
 				return invalid("VerificationReceipt check %d is missing provenance for bridge:verifier", i)
 			}
 		}
@@ -1124,6 +1147,9 @@ func expectedSourceRoles(kind string) []string {
 
 func allowedOptional(kind, key string) bool {
 	if kind == "Observation" && key == "effect" {
+		return true
+	}
+	if kind == "VerificationReceipt" && key == "attestation" {
 		return true
 	}
 	return false
@@ -1538,6 +1564,17 @@ func requireSHA(raw []byte, name string) error {
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil || !sha256Pattern.MatchString(value) {
 		return fmt.Errorf("%s must be lowercase sha256", name)
+	}
+	return nil
+}
+
+func requireHexDigest(raw []byte, name string, length int) error {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || len(value) != length {
+		return fmt.Errorf("%s must be %d lowercase hexadecimal characters", name, length)
+	}
+	if _, err := hex.DecodeString(value); err != nil || strings.ToLower(value) != value {
+		return fmt.Errorf("%s must be %d lowercase hexadecimal characters", name, length)
 	}
 	return nil
 }

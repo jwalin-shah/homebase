@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	legacyVerifierID     = "bridge:verifier"
 	productionVerifierID = "bridge:verifier:v2"
 	attestationScheme    = "ed25519-content-hash-v1"
 )
@@ -107,8 +108,11 @@ func VerifyBridgeReceiptAttestation(raw []byte, publicKey ed25519.PublicKey, exp
 	if err != nil {
 		return err
 	}
-	if receipt.VerifierID != productionVerifierID {
+	if receipt.VerifierID == legacyVerifierID {
 		return nil
+	}
+	if receipt.VerifierID != productionVerifierID {
+		return invalid("unsupported Bridge verifier identity %q", receipt.VerifierID)
 	}
 	if len(publicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("verifier attestation public key is not configured")
@@ -536,6 +540,9 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 	if receipt.WorkerID == receipt.VerifierID {
 		return bridgeReceipt{}, invalid("Bridge verification receipt worker and verifier identities must be distinct")
 	}
+	if receipt.VerifierID != legacyVerifierID && receipt.VerifierID != productionVerifierID {
+		return bridgeReceipt{}, invalid("Bridge verification receipt verifier identity %q is not enrolled", receipt.VerifierID)
+	}
 	if receipt.VerifierID == productionVerifierID {
 		if receipt.Attestation == nil || receipt.Attestation.Scheme != attestationScheme || strings.TrimSpace(receipt.Attestation.KeyID) == "" {
 			return bridgeReceipt{}, invalid("production verification receipt attestation is missing or malformed")
@@ -563,7 +570,7 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 			return bridgeReceipt{}, invalid("Bridge verification receipt check %d is invalid", index)
 		}
 		if check.Provenance == nil {
-			if receipt.VerifierID == "bridge:verifier" {
+			if receipt.VerifierID == legacyVerifierID || receipt.VerifierID == productionVerifierID {
 				return bridgeReceipt{}, invalid("Bridge verification receipt check %d is missing provenance", index)
 			}
 		} else if err := validateBridgeProvenance(*check.Provenance, receipt.TreeSHA); err != nil {
@@ -709,6 +716,15 @@ func buildBridgeRecords(receipt bridgeReceipt, s *Store) ([]json.RawMessage, err
 	}
 	if contentHash != receipt.ContentHash {
 		return nil, invalid("Bridge receipt payload does not match durable record payload")
+	}
+	// The Bridge content hash intentionally excludes the detached signature to
+	// avoid a signing cycle. HomeBase's envelope hash covers this stored copy so
+	// replay can prove that the attestation was retained and not removed.
+	if receipt.Attestation != nil {
+		durablePayload["attestation"] = map[string]any{
+			"scheme": receipt.Attestation.Scheme, "key_id": receipt.Attestation.KeyID,
+			"signature": receipt.Attestation.Signature,
+		}
 	}
 	receiptSourceRefs := append([]SourceRef{contractRef, grantRef, claimRef}, proofRefs...)
 	receiptRaw, err := bridgeEnvelope("VerificationReceipt", receipt.ID, receiptSourceRefs, AuthorityVerifiedEvidence, "verified", receipt.VerifierID, "verifier", receipt.VerifiedAt, "independent verification bound to contract, grant, and Git tree", durablePayload)

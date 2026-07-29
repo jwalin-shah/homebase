@@ -26,7 +26,7 @@ func bridgeSubmission(t *testing.T, contractID, grantID, treeSHA string) []byte 
 	}}
 	payload := map[string]any{
 		"task_id": "task-1", "contract_id": contractID, "grant_id": grantID,
-		"worker_id": "worker-1", "verifier_id": "verifier-1", "tree_digest": treeDigest,
+		"worker_id": "worker-1", "verifier_id": legacyVerifierID, "tree_digest": treeDigest,
 		"subject":          map[string]any{"kind": "git_tree", "name": treeSHA, "digest": map[string]any{"sha256": treeDigest}},
 		"checks":           durableChecks,
 		"evidence_refs":    []any{map[string]any{"kind": "proof", "id": "proof:bridge:0"}},
@@ -40,7 +40,7 @@ func bridgeSubmission(t *testing.T, contractID, grantID, treeSHA string) []byte 
 	return mustJSONBridge(t, map[string]any{
 		"kind": "VerificationReceipt", "version": "1", "id": "receipt:task-1:" + treeSHA,
 		"content_hash": contentHash, "task_id": "task-1", "contract_id": contractID, "grant_id": grantID,
-		"worker_id": "worker-1", "verifier_id": "verifier-1", "tree_sha": treeSHA, "tree_digest": treeDigest,
+		"worker_id": "worker-1", "verifier_id": legacyVerifierID, "tree_sha": treeSHA, "tree_digest": treeDigest,
 		"subject": payload["subject"], "checks": checks, "evidence_refs": payload["evidence_refs"],
 		"worker_claim_ref": payload["worker_claim_ref"], "verified_at": "2026-07-28T12:00:00Z",
 		"worker_statement": "worker completed the contract",
@@ -120,6 +120,90 @@ func TestProductionBridgeReceiptRequiresValidVerifierAttestation(t *testing.T) {
 	}
 }
 
+func TestProductionBridgeReceiptRejectsMissingAndUnknownVerifierAuthority(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := productionBridgeSubmission(t, private, "verifier-key-1")
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "attestation")
+	if err := VerifyBridgeReceiptAttestation(mustJSONBridge(t, document), private.Public().(ed25519.PublicKey), "verifier-key-1"); err == nil {
+		t.Fatal("VerifyBridgeReceiptAttestation accepted an unsigned production receipt")
+	}
+
+	document["verifier_id"] = "attacker-controlled-verifier"
+	if err := VerifyBridgeReceiptAttestation(mustJSONBridge(t, document), private.Public().(ed25519.PublicKey), "verifier-key-1"); err == nil {
+		t.Fatal("VerifyBridgeReceiptAttestation accepted an unknown verifier identity")
+	}
+}
+
+func TestProductionBridgeReceiptRetainsAttestationAcrossReplay(t *testing.T) {
+	path := t.TempDir() + "/records.journal"
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validBridgeContract(t, "contract-1", productionVerifierID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := "verifier-key-1"
+	raw := productionBridgeSubmission(t, private, keyID)
+	if err := VerifyBridgeReceiptAttestation(raw, public, keyID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AppendBridgeVerificationSubmission(raw)
+	if err != nil {
+		t.Fatalf("append production receipt: %v", err)
+	}
+	fields, err := objectFields(first.Receipt.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["attestation"]; !ok {
+		t.Fatal("durable production receipt dropped attestation")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	j2, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j2.Close()
+	reopened, err := NewStore(j2)
+	if err != nil {
+		t.Fatalf("reopen production receipt: %v", err)
+	}
+	replayed, err := reopened.Get(first.Receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedFields, err := objectFields(replayed.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attestation, ok := replayedFields["attestation"]
+	if !ok || string(attestation) == "null" {
+		t.Fatal("replayed production receipt lost attestation")
+	}
+}
+
 func productionBridgeSubmission(t *testing.T, private ed25519.PrivateKey, keyID string) []byte {
 	t.Helper()
 	var document map[string]any
@@ -150,6 +234,15 @@ func productionBridgeSubmission(t *testing.T, private ed25519.PrivateKey, keyID 
 	return mustJSONBridge(t, document)
 }
 
+func validBridgeContract(t *testing.T, id, verifierID string) []byte {
+	t.Helper()
+	document := decodeObject(t, validContract(t, id))
+	payload := document["payload"].(map[string]any)
+	payload["verifier_id"] = verifierID
+	document["content_hash"] = payloadHashBridge(t, payload)
+	return mustJSONBridge(t, document)
+}
+
 func TestBridgeReceiptRejectsWorkerAsVerifier(t *testing.T) {
 	var document map[string]any
 	if err := json.Unmarshal(bridgeSubmission(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789"), &document); err != nil {
@@ -172,7 +265,7 @@ func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
+	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
@@ -212,14 +305,14 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
+	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
 		t.Fatal(err)
 	}
 
-	raw := bridgeSubmission(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789")
+	raw := bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789")
 	first, err := store.AppendBridgeVerificationSubmission(raw)
 	if err != nil {
 		t.Fatalf("first Bridge submission: %v", err)
@@ -237,7 +330,7 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 	if got := len(store.List()); got != 5 {
 		t.Fatalf("record count after atomic submission = %d, want 5", got)
 	}
-	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmission(t, "contract-1", "grant-1", "abcdefabcdefabcdefabcdefabcdefabcdefabcd")); err == nil {
+	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "abcdefabcdefabcdefabcdefabcdefabcdefabcd")); err == nil {
 		t.Fatal("second tree for the same admitted task was accepted as another terminal receipt")
 	}
 	if err := j.Close(); err != nil {
@@ -273,7 +366,7 @@ func TestBridgeVerificationRejectsExpiredAuthorityAtSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
+	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
 		t.Fatal(err)
 	}
 	expiredGrant := decodeObject(t, validGrant(t, "grant-1", "contract-1", "idem-1"))

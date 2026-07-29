@@ -81,7 +81,7 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recordStore.Append(bridgeContract(t, "contract-1")); err != nil {
+	if _, err := recordStore.Append(bridgeVerificationContract(t, "contract-1")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
@@ -321,13 +321,29 @@ func bridgeReceipt(t *testing.T) []byte {
 	treeSHA := "0123456789012345678901234567890123456789"
 	digest := sha256.Sum256([]byte("git-tree-sha:v1:" + treeSHA))
 	treeDigest := hex.EncodeToString(digest[:])
+	command := []string{"go", "test", "./..."}
+	commandDigest, err := canonicalHash(t, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environmentDigest, err := canonicalHash(t, []string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofDigest := sha256.Sum256([]byte("proof output"))
+	provenance := map[string]any{
+		"schema_version": "1", "command": command, "command_digest": commandDigest,
+		"environment_digest": environmentDigest, "output_digest": hex.EncodeToString(proofDigest[:]),
+		"log_digest": hex.EncodeToString(proofDigest[:]), "checkout_sha": treeSHA,
+		"verifier_version": "bridge-verifier/v2", "tool_versions": map[string]string{"bridge-verifier": "bridge-verifier/v2"}, "cache_status": "miss",
+	}
 	durableChecks := []any{map[string]any{
-		"name": "go test ./...", "result": "passed",
+		"name": "go test ./...", "result": "passed", "proof_command": "go test ./...", "provenance": provenance,
 		"evidence_ref": map[string]any{"kind": "proof", "id": "proof:bridge:0"},
 	}}
 	payload := map[string]any{
 		"task_id": "task-1", "contract_id": "contract-1", "grant_id": "grant-1",
-		"worker_id": "worker-1", "verifier_id": "verifier-1", "tree_digest": treeDigest,
+		"worker_id": "worker-1", "verifier_id": "bridge:verifier", "tree_digest": treeDigest,
 		"subject":          map[string]any{"kind": "git_tree", "name": treeSHA, "digest": map[string]any{"sha256": treeDigest}},
 		"checks":           durableChecks,
 		"evidence_refs":    []any{map[string]any{"kind": "proof", "id": "proof:bridge:0"}},
@@ -341,9 +357,9 @@ func bridgeReceipt(t *testing.T) []byte {
 	return mustJSON(t, map[string]any{
 		"kind": "VerificationReceipt", "version": "1", "id": "receipt:task-1:" + treeSHA,
 		"content_hash": contentHash, "task_id": "task-1", "contract_id": "contract-1", "grant_id": "grant-1",
-		"worker_id": "worker-1", "verifier_id": "verifier-1", "tree_sha": treeSHA, "tree_digest": treeDigest,
+		"worker_id": "worker-1", "verifier_id": "bridge:verifier", "tree_sha": treeSHA, "tree_digest": treeDigest,
 		"subject":       payload["subject"],
-		"checks":        []any{map[string]any{"name": "go test ./...", "result": "passed", "proof_command": "go test ./...", "evidence_ref": map[string]any{"kind": "proof", "id": "proof:bridge:0"}}},
+		"checks":        []any{map[string]any{"name": "go test ./...", "result": "passed", "proof_command": "go test ./...", "provenance": provenance, "evidence_ref": map[string]any{"kind": "proof", "id": "proof:bridge:0"}}},
 		"evidence_refs": payload["evidence_refs"], "worker_claim_ref": payload["worker_claim_ref"],
 		"verified_at": "2026-07-28T12:00:00Z", "worker_statement": "worker completed the contract",
 	})
@@ -365,6 +381,25 @@ func bridgeContract(t *testing.T, id string) []byte {
 		"authority_class": records.AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "approved", "source": map[string]any{"id": "homebase", "role": "homebase"}, "payload": payload,
 	})
+}
+
+func bridgeVerificationContract(t *testing.T, id string) []byte {
+	t.Helper()
+	document := decodeObject(t, bridgeContract(t, id))
+	payload := document["payload"].(map[string]any)
+	payload["verifier_id"] = "bridge:verifier"
+	document["content_hash"] = payloadHash(t, payload)
+	return mustJSON(t, document)
+}
+
+func canonicalHash(t *testing.T, value any) (string, error) {
+	t.Helper()
+	canonical, err := records.CanonicalJSONValue(mustJSON(t, value))
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func bridgeGrant(t *testing.T, id, contractID string) []byte {
