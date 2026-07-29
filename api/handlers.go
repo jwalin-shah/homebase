@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"homebase/internal/application"
 	"homebase/internal/domain"
 	"homebase/internal/ledger"
+	"homebase/internal/promotion"
 	"homebase/internal/records"
 	"homebase/internal/signing"
 	"homebase/internal/types"
@@ -21,6 +24,7 @@ type Server struct {
 	signer      *signing.Signer
 	store       *ledger.Store
 	recordStore *records.Store
+	promotion   *promotion.Service
 	attemptSvc  *application.AttemptService
 }
 
@@ -37,6 +41,15 @@ func NewServer(v *validation.Validator, s *signing.Signer, st *ledger.Store) *Se
 func NewServerWithRecords(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store) *Server {
 	server := NewServer(v, s, st)
 	server.recordStore = rs
+	return server
+}
+
+// NewServerWithPromotion adds the authenticated transcript-promotion path.
+// The caller must supply a service with persistent receipt keys and a real
+// transport authenticator; this constructor never manufactures authority.
+func NewServerWithPromotion(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service) *Server {
+	server := NewServerWithRecords(v, s, st, rs)
+	server.promotion = ps
 	return server
 }
 
@@ -90,6 +103,78 @@ func (s *Server) HandleAppendExternalRecord(w http.ResponseWriter, r *http.Reque
 		"existing": result.Existing,
 		"sequence": result.Sequence,
 	})
+}
+
+// HandlePromoteTranscript admits a transcript-derived decision only through
+// the authenticated promotion service. A successful response means the
+// evidence, decision, and signed receipt were committed together.
+func (s *Server) HandlePromoteTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.promotion == nil {
+		http.Error(w, "promotion service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var raw json.RawMessage
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&raw); err != nil {
+		http.Error(w, "invalid promotion JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one promotion case", http.StatusBadRequest)
+		return
+	}
+	signature, err := decodeSignature(r.Header.Get("X-HomeBase-Transcript-Signature"))
+	if err != nil {
+		http.Error(w, "missing or malformed transcript signature", http.StatusUnauthorized)
+		return
+	}
+	outcome, promoteErr := s.promotion.Promote(r.Context(), raw, signature)
+	if promoteErr != nil {
+		switch {
+		case errors.Is(promoteErr, promotion.ErrUnauthenticated):
+			http.Error(w, "transcript authentication failed", http.StatusUnauthorized)
+		case errors.Is(promoteErr, promotion.ErrConflict):
+			http.Error(w, "promotion conflicts with an existing decision", http.StatusConflict)
+		case errors.Is(promoteErr, promotion.ErrInvalidPromotion):
+			writeJSON(w, http.StatusUnprocessableEntity, outcome)
+		default:
+			http.Error(w, "promotion was not durably committed", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if outcome.Existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, outcome)
+}
+
+func decodeSignature(value string) ([]byte, error) {
+	if value == "" {
+		return nil, errors.New("signature is required")
+	}
+	if decoded, err := hex.DecodeString(value); err == nil {
+		return decoded, nil
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+		return decoded, nil
+	}
+	if decoded, err := base64.RawStdEncoding.DecodeString(value); err == nil {
+		return decoded, nil
+	}
+	return nil, errors.New("signature is not hex or base64")
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 // RecordRequest is the JSON payload Orbit or Bridge sends to HomeBase.

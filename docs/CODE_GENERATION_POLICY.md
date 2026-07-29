@@ -39,6 +39,17 @@ lemmas, policy decisions, bounded orchestration, adapter code, performance
 choices, and failure handling. Those changes require a rationale, proof
 obligations, tests, and adversarial review.
 
+## Current implementation status
+
+The running-machine slice currently has handwritten Go mirrors for the shared
+record envelope and transcript-promotion case. They are not being called
+generated: the contracts repository is the source of truth, and Python
+conformance plus Go fixture-parity tests are the current guard against drift.
+The next safe generator is a pinned schema-to-types tool selected through the
+tool inventory, followed by a checked-in generated diff and a mutation suite.
+Until that exists, changing the schema requires changing the Go mirror and its
+tests in the same reviewed change.
+
 ## SCIP boundary
 
 SCIP is a code-intelligence index. It is generated from the language-aware

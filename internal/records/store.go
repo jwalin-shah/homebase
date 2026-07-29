@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"homebase/internal/journal"
 	"io"
+	"math/big"
 	"regexp"
 	"sort"
 	"strings"
@@ -82,10 +83,37 @@ type AppendResult struct {
 	Record   Record
 }
 
+// PromotionCommitResult is returned after one journal entry durably commits
+// the evidence, decision, and verifier receipt produced by transcript
+// promotion. The receipt is opaque to this package; promotion owns its
+// cryptographic schema while records owns the durable atomic boundary.
+type PromotionCommitResult struct {
+	Sequence uint64
+	Existing bool
+	Decision Record
+	Evidence Record
+	Receipt  json.RawMessage
+}
+
+type promotionCommit struct {
+	Decision json.RawMessage `json:"decision"`
+	Evidence json.RawMessage `json:"evidence"`
+	Receipt  json.RawMessage `json:"receipt"`
+}
+
+type storedPromotion struct {
+	decisionID string
+	evidenceID string
+	canonical  []byte
+	receipt    json.RawMessage
+	sequence   uint64
+}
+
 type Store struct {
-	mu      sync.Mutex
-	journal *journal.BinaryJournal
-	records map[string]storedRecord
+	mu         sync.Mutex
+	journal    *journal.BinaryJournal
+	records    map[string]storedRecord
+	promotions map[string]storedPromotion
 }
 
 type storedRecord struct {
@@ -97,11 +125,43 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 	if j == nil {
 		return nil, fmt.Errorf("%w: journal is required", ErrInvalidRecord)
 	}
-	s := &Store{journal: j, records: make(map[string]storedRecord)}
+	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion)}
 	if err := j.Replay(func(seq uint64, payload []byte) error {
 		envelope, err := journal.DecodeRecord(payload)
 		if err != nil {
 			return fmt.Errorf("shared record journal entry %d: %w", seq, err)
+		}
+		if envelope.Kind == journal.RecordKindPromotionCommit {
+			commit, err := decodePromotionCommit(envelope.Payload)
+			if err != nil {
+				return fmt.Errorf("promotion commit journal entry %d: %w", seq, err)
+			}
+			evidence, evidenceCanonical, err := parseAndValidate(commit.Evidence)
+			if err != nil || evidence.Kind != "Evidence" {
+				return fmt.Errorf("promotion commit journal entry %d evidence: %w", seq, invalid("expected Evidence record: %v", err))
+			}
+			if err := s.load(evidence, evidenceCanonical); err != nil {
+				return fmt.Errorf("promotion commit journal entry %d evidence: %w", seq, err)
+			}
+			decision, decisionCanonical, err := parseAndValidate(commit.Decision)
+			if err != nil || decision.Kind != "Decision" {
+				return fmt.Errorf("promotion commit journal entry %d decision: %w", seq, invalid("expected Decision record: %v", err))
+			}
+			if err := s.load(decision, decisionCanonical); err != nil {
+				return fmt.Errorf("promotion commit journal entry %d decision: %w", seq, err)
+			}
+			if err := ensureDecisionEvidenceReference(decision, evidence); err != nil {
+				return fmt.Errorf("promotion commit journal entry %d lineage: %w", seq, err)
+			}
+			commitCanonical, err := canonicalObject(envelope.Payload)
+			if err != nil {
+				return fmt.Errorf("promotion commit journal entry %d canonical form: %w", seq, err)
+			}
+			if existing, ok := s.promotions[decision.ID]; ok && !bytes.Equal(existing.canonical, commitCanonical) {
+				return fmt.Errorf("promotion commit journal entry %d: %w: %s", seq, ErrConflict, decision.ID)
+			}
+			s.promotions[decision.ID] = storedPromotion{decisionID: decision.ID, evidenceID: evidence.ID, canonical: commitCanonical, receipt: bytes.Clone(commit.Receipt), sequence: seq}
+			return nil
 		}
 		if envelope.Kind != journal.RecordKindSharedRecord {
 			return nil
@@ -147,6 +207,83 @@ func (s *Store) AppendExternal(raw []byte) (AppendResult, error) {
 		return AppendResult{}, fmt.Errorf("%w: %s/%s", ErrAuthorityRequired, record.Kind, record.AuthorityClass)
 	}
 	return s.appendValidated(record, canonical)
+}
+
+// AppendPromotionCommit atomically persists the evidence, decision, and
+// authority-owned receipt in one journal entry. Promotion is the only caller
+// allowed to create this bundle; records still validates the typed record
+// envelopes and the decision-to-evidence lineage.
+func (s *Store) AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw []byte) (PromotionCommitResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	decision, decisionCanonical, err := parseAndValidate(decisionRaw)
+	if err != nil {
+		return PromotionCommitResult{}, err
+	}
+	if decision.Kind != "Decision" {
+		return PromotionCommitResult{}, invalid("promotion decision must have kind Decision")
+	}
+	evidence, evidenceCanonical, err := parseAndValidate(evidenceRaw)
+	if err != nil {
+		return PromotionCommitResult{}, err
+	}
+	if evidence.Kind != "Evidence" {
+		return PromotionCommitResult{}, invalid("promotion evidence must have kind Evidence")
+	}
+	if err := ensureDecisionEvidenceReference(decision, evidence); err != nil {
+		return PromotionCommitResult{}, err
+	}
+	receiptCanonical, err := canonicalObject(receiptRaw)
+	if err != nil {
+		return PromotionCommitResult{}, invalid("promotion receipt: %v", err)
+	}
+
+	commit := promotionCommit{
+		Decision: decisionCanonical,
+		Evidence: evidenceCanonical,
+		Receipt:  receiptCanonical,
+	}
+	commitRaw, err := json.Marshal(commit)
+	if err != nil {
+		return PromotionCommitResult{}, fmt.Errorf("encode promotion commit: %w", err)
+	}
+	commitCanonical, err := canonicalObject(commitRaw)
+	if err != nil {
+		return PromotionCommitResult{}, fmt.Errorf("canonicalize promotion commit: %w", err)
+	}
+
+	if existing, ok := s.promotions[decision.ID]; ok {
+		if bytes.Equal(existing.canonical, commitCanonical) {
+			return PromotionCommitResult{Existing: true, Decision: decision, Evidence: evidence, Receipt: receiptCanonical}, nil
+		}
+		return PromotionCommitResult{}, fmt.Errorf("%w: promotion decision %s", ErrConflict, decision.ID)
+	}
+	if existing, ok := s.records[evidence.ID]; ok && !bytes.Equal(existing.canonical, evidenceCanonical) {
+		return PromotionCommitResult{}, fmt.Errorf("%w: evidence %s", ErrConflict, evidence.ID)
+	}
+	if existing, ok := s.records[decision.ID]; ok && !bytes.Equal(existing.canonical, decisionCanonical) {
+		return PromotionCommitResult{}, fmt.Errorf("%w: decision %s", ErrConflict, decision.ID)
+	}
+	if err := s.validateReferences(evidence); err != nil {
+		return PromotionCommitResult{}, err
+	}
+	if err := s.validateReferences(decision); err != nil {
+		return PromotionCommitResult{}, err
+	}
+
+	payload, err := journal.EncodeRecord(journal.RecordKindPromotionCommit, commitCanonical)
+	if err != nil {
+		return PromotionCommitResult{}, fmt.Errorf("encode promotion journal record: %w", err)
+	}
+	sequence, err := s.journal.Append(payload)
+	if err != nil {
+		return PromotionCommitResult{}, fmt.Errorf("append promotion commit: %w", err)
+	}
+	s.records[evidence.ID] = storedRecord{record: evidence, canonical: evidenceCanonical}
+	s.records[decision.ID] = storedRecord{record: decision, canonical: decisionCanonical}
+	s.promotions[decision.ID] = storedPromotion{decisionID: decision.ID, evidenceID: evidence.ID, canonical: commitCanonical, receipt: bytes.Clone(receiptCanonical), sequence: sequence}
+	return PromotionCommitResult{Sequence: sequence, Decision: decision, Evidence: evidence, Receipt: receiptCanonical}, nil
 }
 
 func (s *Store) appendValidated(record Record, canonical []byte) (AppendResult, error) {
@@ -197,6 +334,32 @@ func (s *Store) List() []Record {
 	return result
 }
 
+// ListPromotionCommits returns the durable promotion bundles in decision-ID
+// order. It is a projection API: callers can rebuild replay guards and
+// indexes, but cannot mutate the authority store through it.
+func (s *Store) ListPromotionCommits() []PromotionCommitResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.promotions))
+	for id := range s.promotions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make([]PromotionCommitResult, 0, len(ids))
+	for _, id := range ids {
+		promotion := s.promotions[id]
+		decision := s.records[promotion.decisionID].record
+		evidence := s.records[promotion.evidenceID].record
+		result = append(result, PromotionCommitResult{
+			Sequence: promotion.sequence,
+			Decision: decision,
+			Evidence: evidence,
+			Receipt:  bytes.Clone(promotion.receipt),
+		})
+	}
+	return result
+}
+
 func (s *Store) load(record Record, canonical []byte) error {
 	if existing, ok := s.records[record.ID]; ok {
 		if bytes.Equal(existing.canonical, canonical) {
@@ -209,6 +372,15 @@ func (s *Store) load(record Record, canonical []byte) error {
 	}
 	s.records[record.ID] = storedRecord{record: record, canonical: canonical}
 	return nil
+}
+
+func ensureDecisionEvidenceReference(decision, evidence Record) error {
+	for _, ref := range decision.SourceRefs {
+		if strings.EqualFold(ref.Kind, "evidence") && ref.ID == evidence.ID && ref.ContentHash == evidence.ContentHash {
+			return nil
+		}
+	}
+	return invalid("Decision %q must reference Evidence %q with its content hash", decision.ID, evidence.ID)
 }
 
 func (s *Store) validateReferences(record Record) error {
@@ -854,6 +1026,84 @@ func objectFields(raw []byte) (map[string]json.RawMessage, error) {
 	return fields, nil
 }
 
+// DecodeStrictJSON parses exactly one JSON value and rejects duplicate object
+// keys. It is exported for typed authority boundaries that must not let two
+// syntactic representations silently acquire different meanings.
+func DecodeStrictJSON(raw []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	value, err := decodeStrictValue(decoder)
+	if err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("contains more than one JSON value")
+		}
+		return nil, err
+	}
+	return value, nil
+}
+
+// CanonicalJSONValue applies the repository's deterministic JSON encoding to
+// any JSON object/array/scalar. Integer numbers are normalized; other numeric
+// forms are rejected so callers cannot create language-dependent digests.
+func CanonicalJSONValue(raw []byte) ([]byte, error) {
+	value, err := DecodeStrictJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	if err := writeCanonicalValue(&out, value); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// CanonicalContentHash returns the SHA-256 digest of a canonical JSON object.
+// It is intended for generated typed payloads and receipts.
+func CanonicalContentHash(raw []byte) (string, error) {
+	canonical, err := canonicalObject(raw)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func decodePromotionCommit(raw []byte) (promotionCommit, error) {
+	fields, err := objectFields(raw)
+	if err != nil {
+		return promotionCommit{}, invalid("promotion commit: %v", err)
+	}
+	for key := range fields {
+		if key != "decision" && key != "evidence" && key != "receipt" {
+			return promotionCommit{}, invalid("promotion commit has unknown field %q", key)
+		}
+	}
+	var commit promotionCommit
+	for key, target := range map[string]*json.RawMessage{
+		"decision": &commit.Decision,
+		"evidence": &commit.Evidence,
+		"receipt":  &commit.Receipt,
+	} {
+		rawValue, ok := fields[key]
+		if !ok || len(rawValue) == 0 {
+			return promotionCommit{}, invalid("promotion commit missing %q", key)
+		}
+		canonical, err := CanonicalJSONValue(rawValue)
+		if err != nil {
+			return promotionCommit{}, invalid("promotion commit %s: %v", key, err)
+		}
+		if _, err := objectFields(canonical); err != nil {
+			return promotionCommit{}, invalid("promotion commit %s must be an object", key)
+		}
+		*target = canonical
+	}
+	return commit, nil
+}
+
 func canonicalObject(raw []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -925,6 +1175,71 @@ func writeCanonical(out *bytes.Buffer, value any) error {
 		out.WriteByte('}')
 	case json.Number:
 		return errors.New("numeric JSON values are not supported by record canonicalization")
+	default:
+		return fmt.Errorf("unsupported JSON value %T", value)
+	}
+	return nil
+}
+
+func writeCanonicalValue(out *bytes.Buffer, value any) error {
+	switch value := value.(type) {
+	case json.Number:
+		integer := value.String()
+		if strings.HasPrefix(integer, "-") {
+			integer = integer[1:]
+		}
+		if integer == "" || strings.Trim(integer, "0123456789") != "" {
+			return fmt.Errorf("non-integer JSON number %q is unsupported", value.String())
+		}
+		var normalized big.Int
+		if _, ok := normalized.SetString(value.String(), 10); !ok {
+			return fmt.Errorf("invalid JSON integer %q", value.String())
+		}
+		out.WriteString(normalized.String())
+		return nil
+	case []any:
+		out.WriteByte('[')
+		for i, item := range value {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			if err := writeCanonicalValue(out, item); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(']')
+		return nil
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		out.WriteByte('{')
+		for i, key := range keys {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			writeCanonicalString(out, key)
+			out.WriteByte(':')
+			if err := writeCanonicalValue(out, value[key]); err != nil {
+				return err
+			}
+		}
+		out.WriteByte('}')
+		return nil
+	case []byte:
+		return errors.New("byte slices are not JSON values")
+	case nil:
+		out.WriteString("null")
+	case bool:
+		if value {
+			out.WriteString("true")
+		} else {
+			out.WriteString("false")
+		}
+	case string:
+		writeCanonicalString(out, value)
 	default:
 		return fmt.Errorf("unsupported JSON value %T", value)
 	}

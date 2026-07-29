@@ -3,15 +3,18 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"homebase/api"
 	"homebase/internal/cache"
 	"homebase/internal/journal"
 	"homebase/internal/ledger"
+	"homebase/internal/promotion"
 	"homebase/internal/records"
 	"homebase/internal/signing"
 	"homebase/internal/validation"
@@ -62,13 +65,31 @@ func main() {
 	// 3. Initialize the Axiom Firewall Validator
 	validator := validation.NewValidator(neo4jClient, store)
 
-	// 4. Initialize the API Server
-	server := api.NewServerWithRecords(validator, signer, store, recordStore)
+	// 4. Initialize the authenticated transcript promotion path only when its
+	// persistent authority keys are configured. The endpoint remains mounted in
+	// an unavailable state rather than silently generating ephemeral authority.
+	var promotionService *promotion.Service
+	if captainPublic, publicErr := loadKey("HOMEBASE_CAPTAIN_PUBLIC_KEY_HEX", "HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE", ed25519.PublicKeySize); publicErr == nil {
+		if receiptPrivate, privateErr := loadKey("HOMEBASE_RECEIPT_PRIVATE_KEY_HEX", "HOMEBASE_RECEIPT_PRIVATE_KEY_FILE", ed25519.PrivateKeySize); privateErr == nil {
+			promotionService, err = promotion.NewService(recordStore, promotion.Ed25519Verifier("captain", ed25519.PublicKey(captainPublic)), ed25519.PrivateKey(receiptPrivate), nil)
+			if err != nil {
+				log.Printf("WARNING: transcript promotion unavailable: authority state could not be rebuilt")
+			}
+		} else {
+			log.Printf("WARNING: transcript promotion unavailable: receipt key is not configured")
+		}
+	} else {
+		log.Printf("WARNING: transcript promotion unavailable: captain key is not configured")
+	}
+
+	// 5. Initialize the API Server
+	server := api.NewServerWithPromotion(validator, signer, store, recordStore, promotionService)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/decisions", server.HandleRecordDecision)
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
+	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
 
 	// 6. Start the Engine
 	port := os.Getenv("PORT")
@@ -84,4 +105,20 @@ func main() {
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server halted: %v", err)
 	}
+}
+
+func loadKey(hexEnv, fileEnv string, size int) ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv(hexEnv))
+	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+		file, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		value = strings.TrimSpace(string(file))
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != size {
+		return nil, fmt.Errorf("invalid key material")
+	}
+	return decoded, nil
 }

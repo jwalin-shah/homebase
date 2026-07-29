@@ -106,18 +106,33 @@ that the architecture is safe or complete.
 
 ## Current HomeBase slice
 
-The current branch implements only the first executable persistence boundary:
+The current branch implements the first executable persistence boundary and a
+runtime transcript-promotion slice:
 
 - `internal/records` validates the shared v1 envelope, canonical payload hash,
   authority class, kind-specific fields, duplicate identity, and durable replay.
 - `internal/journal` gives that store an explicit `SharedRecord` transport kind.
 - `api/handlers.go` exposes external evidence/observation/proposal ingress and
-  rejects authoritative kinds at that public boundary.
-- `cmd/homebase/main.go` opens the typed journal and mounts the endpoint.
+  rejects authoritative kinds at that public boundary. It also exposes the
+  authenticated transcript-promotion endpoint when persistent captain and
+  receipt keys are configured.
+- `internal/promotion` matches the transcript-promotion-v1 shape, verifies the
+  detached Ed25519 transcript signature, enforces source spans/approval
+  freshness/nonce binding, signs the receipt, and uses one `PromotionCommit`
+  journal entry for evidence plus decision plus receipt.
+- `cmd/homebase/main.go` opens the typed journal and mounts both endpoints;
+  promotion remains explicitly unavailable when its persistent keys are absent.
 - Tests cover durable reopen, idempotent replay, conflicting IDs, malformed and
   forged records, authority spoofing, and reducer separation.
 
-This slice is **not yet proven end-to-end**. It does not establish transcript
-promotion, authenticated decision signing, HomeBase-to-Knowledge-Engine
-projection, real Orbit/Bridge task execution, generated-code refinement, or
-crash testing against a killed process. Those remain explicit gates above.
+The promotion slice has executable fixture parity, durable restart/idempotency
+tests, invalid-authentication tests, and a model-only Dafny state proof. It is
+still not an end-to-end Orbit/Trajectory/Knowledge-Engine/Bridge certification.
+The Go implementation has not yet been refined from generated Dafny code, and
+the legacy decision signer in `cmd/homebase` remains ephemeral; those are
+separate production blockers.
+
+This slice is **not yet proven end-to-end**. It does not establish
+HomeBase-to-Knowledge-Engine projection, real Orbit/Bridge task execution,
+generated-code refinement, or crash testing against a killed process. Those
+remain explicit gates above.
