@@ -95,6 +95,10 @@ func (s *Store) prepareContractGrantCommit(contractRaw, grantRaw []byte, allowEx
 	if err != nil {
 		return preparedContractGrant{}, err
 	}
+	grantPayloadID, ok := stringValue(grantFields["grant_id"])
+	if !ok || grantPayloadID != grant.ID {
+		return preparedContractGrant{}, invalid("CapabilityGrant grant_id must equal envelope id %q", grant.ID)
+	}
 	grantContractID, ok := stringValue(grantFields["contract_id"])
 	if !ok || grantContractID != contract.ID {
 		return preparedContractGrant{}, invalid("CapabilityGrant contract_id must reference committed Contract %q", contract.ID)

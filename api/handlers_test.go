@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHandleAppendExternalRecordUsesTypedDurableBoundary(t *testing.T) {
@@ -214,6 +215,10 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 	server := NewServerWithBridge(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, public)
 	check := mustJSON(t, map[string]any{
 		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "task-1", "worker_id": "worker-1",
+		"repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
+		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
+		"acceptance": []string{"go test ./..."}, "commands": []string{"go test ./..."},
+		"context_hash": hex.EncodeToString(make([]byte, 32)), "verifier_id": "verifier-1", "idempotency_key": "idem-1",
 	})
 	sign := func(raw []byte) string {
 		canonical, err := records.CanonicalJSONValue(raw)
@@ -230,8 +235,22 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 		t.Fatalf("valid check status = %d, body = %s", response.Code, response.Body.String())
 	}
 
+	mismatchedTree := decodeObject(t, check)
+	mismatchedTree["base_commit"] = "ffffffffffffffffffffffffffffffffffffffff"
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(mustJSON(t, mismatchedTree)))
+	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(mustJSON(t, mismatchedTree)))
+	response = httptest.NewRecorder()
+	server.HandleCheckContractGrant(response, request)
+	if response.Code != http.StatusPreconditionFailed {
+		t.Fatalf("mismatched base tree status = %d, body = %s", response.Code, response.Body.String())
+	}
+
 	wrongScope := mustJSON(t, map[string]any{
 		"contract_id": "contract-1", "grant_id": "grant-1", "task_id": "other-task", "worker_id": "worker-1",
+		"repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
+		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
+		"acceptance": []string{"go test ./..."}, "commands": []string{"go test ./..."},
+		"context_hash": hex.EncodeToString(make([]byte, 32)), "verifier_id": "verifier-1", "idempotency_key": "idem-1",
 	})
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(wrongScope))
 	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(wrongScope))
@@ -247,6 +266,15 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 	server.HandleCheckContractGrant(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("bad signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	server.now = func() time.Time { return time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC) }
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants/check", bytes.NewReader(check))
+	request.Header.Set("X-Bridge-Contract-Check-Signature", sign(check))
+	response = httptest.NewRecorder()
+	server.HandleCheckContractGrant(response, request)
+	if response.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expired authority status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
@@ -288,7 +316,7 @@ func bridgeContract(t *testing.T, id string) []byte {
 	payload := map[string]any{
 		"task_id": "task-1", "repository": "homebase", "base_commit": "0123456789012345678901234567890123456789",
 		"allowed_paths": []string{"internal/"}, "forbidden_paths": []string{"secrets/"},
-		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-07-29T00:00:00Z",
+		"context_hash": hex.EncodeToString(make([]byte, 32)), "context_valid_until": "2026-12-31T00:00:00Z",
 		"idempotency_key": "idem-1", "worker_id": "worker-1", "verifier_id": "verifier-1",
 		"acceptance": []string{"go test ./..."}, "publication": "prohibited",
 	}
@@ -296,7 +324,7 @@ func bridgeContract(t *testing.T, id string) []byte {
 		"kind": "Contract", "version": "1", "id": id,
 		"source_refs":  []any{map[string]any{"kind": "decision", "id": "decision-1"}},
 		"content_hash": payloadHash(t, payload), "captured_at": "2026-07-28T00:00:00Z",
-		"authority_class": records.AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-07-29T00:00:00Z"},
+		"authority_class": records.AuthorityHumanDecision, "freshness": map[string]any{"mode": "time_bound", "valid_until": "2026-12-31T00:00:00Z"},
 		"status": "approved", "source": map[string]any{"id": "homebase", "role": "homebase"}, "payload": payload,
 	})
 }

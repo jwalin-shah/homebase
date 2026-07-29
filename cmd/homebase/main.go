@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -117,7 +118,13 @@ func main() {
 	fmt.Println("[OK] Ed25519 Cryptography initialized.")
 	fmt.Println("[OK] Append-only Ledger connected.")
 
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		log.Fatalf("Server failed to bind: %v", err)
+	}
+	defer listener.Close()
+	fmt.Printf("HomeBase listening on %s\n", listener.Addr().String())
+	if err := http.Serve(listener, mux); err != nil {
 		log.Fatalf("Server halted: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"time"
 
 	"homebase/internal/application"
@@ -30,12 +31,13 @@ type Server struct {
 	bridgeKey   ed25519.PublicKey
 	contractKey ed25519.PublicKey
 	attemptSvc  *application.AttemptService
+	now         func() time.Time
 }
 
 // NewServer initializes the API.
 func NewServer(v *validation.Validator, s *signing.Signer, st *ledger.Store) *Server {
 	// For milestone 1, we use a mock repository (non-durable) since persistence is milestone 3.
-	return &Server{validator: v, signer: s, store: st, attemptSvc: application.NewAttemptService(application.NewMockAttemptRepository())}
+	return &Server{validator: v, signer: s, store: st, attemptSvc: application.NewAttemptService(application.NewMockAttemptRepository()), now: time.Now}
 }
 
 // NewServerWithRecords adds the typed shared-record boundary without changing
@@ -207,10 +209,19 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var request struct {
-		ContractID string `json:"contract_id"`
-		GrantID    string `json:"grant_id"`
-		TaskID     string `json:"task_id"`
-		WorkerID   string `json:"worker_id"`
+		ContractID     string   `json:"contract_id"`
+		GrantID        string   `json:"grant_id"`
+		TaskID         string   `json:"task_id"`
+		WorkerID       string   `json:"worker_id"`
+		Repository     string   `json:"repository"`
+		BaseCommit     string   `json:"base_commit"`
+		AllowedPaths   []string `json:"allowed_paths"`
+		ForbiddenPaths []string `json:"forbidden_paths"`
+		Acceptance     []string `json:"acceptance"`
+		Commands       []string `json:"commands"`
+		ContextHash    string   `json:"context_hash"`
+		VerifierID     string   `json:"verifier_id"`
+		IdempotencyKey string   `json:"idempotency_key"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -239,14 +250,50 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		http.Error(w, "CapabilityGrant not found", http.StatusNotFound)
 		return
 	}
+	if contract.Status != "approved" || grant.Status != "active" {
+		http.Error(w, "Contract/CapabilityGrant is not currently active", http.StatusPreconditionFailed)
+		return
+	}
+	now := s.now().UTC()
+	if !liveAuthorityFreshness(contract, now) || !liveAuthorityFreshness(grant, now) {
+		http.Error(w, "Contract/CapabilityGrant freshness is not current", http.StatusPreconditionFailed)
+		return
+	}
 	contractFields, err := objectFields(contract.Payload)
-	if err != nil || !sameStringField(contractFields, "task_id", request.TaskID) || !sameStringField(contractFields, "worker_id", request.WorkerID) {
+	if err != nil ||
+		!sameStringField(contractFields, "task_id", request.TaskID) ||
+		!sameStringField(contractFields, "worker_id", request.WorkerID) ||
+		!sameStringField(contractFields, "repository", request.Repository) ||
+		!sameStringField(contractFields, "base_commit", request.BaseCommit) ||
+		!sameStringField(contractFields, "context_hash", request.ContextHash) ||
+		!sameStringField(contractFields, "verifier_id", request.VerifierID) ||
+		!sameStringField(contractFields, "idempotency_key", request.IdempotencyKey) ||
+		!sameStringArray(contractFields, "allowed_paths", request.AllowedPaths) ||
+		!sameStringArray(contractFields, "forbidden_paths", request.ForbiddenPaths) ||
+		!sameStringArray(contractFields, "acceptance", request.Acceptance) {
 		http.Error(w, "Contract scope does not match request", http.StatusPreconditionFailed)
 		return
 	}
 	grantFields, err := objectFields(grant.Payload)
-	if err != nil || !sameStringField(grantFields, "contract_id", request.ContractID) || !sameStringField(grantFields, "task_id", request.TaskID) || !sameStringField(grantFields, "worker_id", request.WorkerID) {
+	if err != nil ||
+		!sameStringField(grantFields, "contract_id", request.ContractID) ||
+		!sameStringField(grantFields, "task_id", request.TaskID) ||
+		!sameStringField(grantFields, "worker_id", request.WorkerID) ||
+		!sameStringField(grantFields, "context_hash", request.ContextHash) ||
+		!sameStringField(grantFields, "idempotency_key", request.IdempotencyKey) ||
+		!sameStringArray(grantFields, "allowed_paths", request.AllowedPaths) ||
+		!sameStringArray(grantFields, "commands", request.Commands) {
 		http.Error(w, "CapabilityGrant scope does not match request", http.StatusPreconditionFailed)
+		return
+	}
+	contextValidUntil, ok := stringValue(contractFields["context_valid_until"])
+	if !ok {
+		http.Error(w, "Contract context expiry is invalid", http.StatusPreconditionFailed)
+		return
+	}
+	contextExpiry, err := time.Parse("2006-01-02T15:04:05Z", contextValidUntil)
+	if err != nil || !s.now().UTC().Before(contextExpiry) {
+		http.Error(w, "Contract context is expired", http.StatusPreconditionFailed)
 		return
 	}
 	expiresAt, ok := stringValue(grantFields["expires_at"])
@@ -255,7 +302,7 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		return
 	}
 	expires, err := time.Parse("2006-01-02T15:04:05Z", expiresAt)
-	if err != nil || !time.Now().UTC().Before(expires) {
+	if err != nil || !s.now().UTC().Before(expires) {
 		http.Error(w, "CapabilityGrant is expired", http.StatusPreconditionFailed)
 		return
 	}
@@ -266,6 +313,14 @@ func (s *Server) HandleCheckContractGrant(w http.ResponseWriter, r *http.Request
 		"worker_id":    request.WorkerID,
 		"context_hash": contractFields["context_hash"],
 	})
+}
+
+func liveAuthorityFreshness(record records.Record, now time.Time) bool {
+	if record.Freshness.Mode != "time_bound" || record.Freshness.ValidUntil == nil {
+		return false
+	}
+	expires, err := time.Parse("2006-01-02T15:04:05Z", *record.Freshness.ValidUntil)
+	return err == nil && now.Before(expires)
 }
 
 func mustMarshalAuthorityRequest(value any) []byte {
@@ -284,6 +339,14 @@ func objectFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 func sameStringField(fields map[string]json.RawMessage, key, want string) bool {
 	got, ok := stringValue(fields[key])
 	return ok && got == want
+}
+
+func sameStringArray(fields map[string]json.RawMessage, key string, want []string) bool {
+	var got []string
+	if err := json.Unmarshal(fields[key], &got); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(got, want)
 }
 
 func stringValue(raw json.RawMessage) (string, bool) {

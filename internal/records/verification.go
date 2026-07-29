@@ -485,6 +485,9 @@ func buildBridgeRecords(receipt bridgeReceipt, s *Store) ([]json.RawMessage, err
 			return nil, invalid("Bridge receipt does not match Contract %q field %s", receipt.ContractID, pair[0])
 		}
 	}
+	if !sameStringField(contractFields, "verifier_id", receipt.VerifierID) {
+		return nil, invalid("Bridge receipt verifier_id does not match Contract %q", receipt.ContractID)
+	}
 	for _, pair := range [][2]string{{"contract_id", receipt.ContractID}, {"task_id", receipt.TaskID}, {"worker_id", receipt.WorkerID}} {
 		if !sameStringField(grantFields, pair[0], pair[1]) {
 			return nil, invalid("Bridge receipt does not match CapabilityGrant %q field %s", receipt.GrantID, pair[0])
