@@ -25,6 +25,7 @@ var (
 	ErrConflict          = errors.New("record id conflicts with an existing record")
 	ErrNotFound          = errors.New("record not found")
 	ErrAuthorityRequired = errors.New("record requires an authenticated authority path")
+	ErrJournalUncertain  = errors.New("journal commit state is uncertain; reopen HomeBase before retrying")
 )
 
 var (
@@ -115,6 +116,7 @@ type Store struct {
 	records       map[string]storedRecord
 	promotions    map[string]storedPromotion
 	verifications map[string]storedVerification
+	poisoned      error
 }
 
 type storedRecord struct {
@@ -190,6 +192,9 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 func (s *Store) Append(raw []byte) (AppendResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureHealthy(); err != nil {
+		return AppendResult{}, err
+	}
 
 	record, canonical, err := parseAndValidate(raw)
 	if err != nil {
@@ -205,6 +210,9 @@ func (s *Store) Append(raw []byte) (AppendResult, error) {
 func (s *Store) AppendExternal(raw []byte) (AppendResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureHealthy(); err != nil {
+		return AppendResult{}, err
+	}
 
 	record, canonical, err := parseAndValidate(raw)
 	if err != nil {
@@ -223,6 +231,9 @@ func (s *Store) AppendExternal(raw []byte) (AppendResult, error) {
 func (s *Store) AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw []byte) (PromotionCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureHealthy(); err != nil {
+		return PromotionCommitResult{}, err
+	}
 
 	decision, decisionCanonical, err := parseAndValidate(decisionRaw)
 	if err != nil {
@@ -285,7 +296,7 @@ func (s *Store) AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw []byt
 	}
 	sequence, err := s.journal.Append(payload)
 	if err != nil {
-		return PromotionCommitResult{}, fmt.Errorf("append promotion commit: %w", err)
+		return PromotionCommitResult{}, s.poison(fmt.Errorf("append promotion commit: %w", err))
 	}
 	s.records[evidence.ID] = storedRecord{record: evidence, canonical: evidenceCanonical}
 	s.records[decision.ID] = storedRecord{record: decision, canonical: decisionCanonical}
@@ -310,10 +321,22 @@ func (s *Store) appendValidated(record Record, canonical []byte) (AppendResult, 
 	}
 	seq, err := s.journal.Append(payload)
 	if err != nil {
-		return AppendResult{}, fmt.Errorf("append shared record: %w", err)
+		return AppendResult{}, s.poison(fmt.Errorf("append shared record: %w", err))
 	}
 	s.records[record.ID] = storedRecord{record: record, canonical: canonical}
 	return AppendResult{Sequence: seq, Record: record}, nil
+}
+
+func (s *Store) ensureHealthy() error {
+	if s.poisoned != nil {
+		return s.poisoned
+	}
+	return nil
+}
+
+func (s *Store) poison(err error) error {
+	s.poisoned = fmt.Errorf("%w: %v", ErrJournalUncertain, err)
+	return s.poisoned
 }
 
 func (s *Store) Get(id string) (Record, error) {

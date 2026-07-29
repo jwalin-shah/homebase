@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"syscall"
 )
 
 var (
@@ -18,29 +19,47 @@ var (
 	ErrCorruptData  = errors.New("checksum mismatch")
 	ErrTruncated    = errors.New("truncated record")
 	ErrOutOfOrder   = errors.New("append sequence out of order")
+	ErrLocked       = errors.New("journal is already open by another process")
 )
 
 type BinaryJournal struct {
 	mu           sync.Mutex
 	file         *os.File
+	lockFile     *os.File
+	syncFn       func() error
 	nextSeq      uint64
 	previousHash [32]byte
 	path         string
 }
 
 func OpenBinaryJournal(path string) (*BinaryJournal, error) {
+	lockPath := path + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("%w: %s", ErrLocked, path)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
 		return nil, err
 	}
 
 	j := &BinaryJournal{
-		file: f,
-		path: path,
+		file:     f,
+		lockFile: lockFile,
+		syncFn:   f.Sync,
+		path:     path,
 	}
 
 	if err := j.recover(); err != nil {
-		f.Close()
+		_ = f.Close()
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
 		return nil, err
 	}
 
@@ -70,6 +89,9 @@ func (j *BinaryJournal) recover() error {
 			// If we read a partial header, it's a truncated tail. We stop here and truncate.
 			if err == io.ErrUnexpectedEOF {
 				if err := j.file.Truncate(lastGoodOffset); err != nil {
+					return err
+				}
+				if err := j.syncFile(); err != nil {
 					return err
 				}
 				break
@@ -109,7 +131,7 @@ func (j *BinaryJournal) recover() error {
 				if err := j.file.Truncate(lastGoodOffset); err != nil {
 					return err
 				}
-				if err := j.file.Sync(); err != nil {
+				if err := j.syncFile(); err != nil {
 					return err
 				}
 				break
@@ -124,7 +146,7 @@ func (j *BinaryJournal) recover() error {
 				if err := j.file.Truncate(lastGoodOffset); err != nil {
 					return err
 				}
-				if err := j.file.Sync(); err != nil {
+				if err := j.syncFile(); err != nil {
 					return err
 				}
 				break
@@ -200,16 +222,16 @@ func (j *BinaryJournal) Append(payload []byte) (uint64, error) {
 	for len(record) > 0 {
 		written, err := j.file.Write(record)
 		if err != nil {
-			return 0, err
+			return 0, j.reconcileAppendError(err)
 		}
 		if written == 0 {
-			return 0, io.ErrShortWrite
+			return 0, j.reconcileAppendError(io.ErrShortWrite)
 		}
 		record = record[written:]
 	}
 
-	if err := j.file.Sync(); err != nil {
-		return 0, err
+	if err := j.syncFile(); err != nil {
+		return 0, j.reconcileAppendError(err)
 	}
 
 	j.nextSeq++
@@ -293,6 +315,25 @@ func (j *BinaryJournal) Replay(handler func(seq uint64, payload []byte) error) e
 func (j *BinaryJournal) Close() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.file.Sync()
-	return j.file.Close()
+	syncErr := j.syncFile()
+	closeErr := j.file.Close()
+	if j.lockFile != nil {
+		_ = syscall.Flock(int(j.lockFile.Fd()), syscall.LOCK_UN)
+		_ = j.lockFile.Close()
+	}
+	return errors.Join(syncErr, closeErr)
+}
+
+func (j *BinaryJournal) syncFile() error {
+	if j.syncFn != nil {
+		return j.syncFn()
+	}
+	return j.file.Sync()
+}
+
+func (j *BinaryJournal) reconcileAppendError(original error) error {
+	if err := j.recover(); err != nil {
+		return fmt.Errorf("%w; journal recovery after append failure: %v", original, err)
+	}
+	return original
 }

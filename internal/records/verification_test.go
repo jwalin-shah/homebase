@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"homebase/internal/journal"
 	"testing"
 )
@@ -145,6 +147,46 @@ func TestStoreReplayRejectsUnknownJournalKind(t *testing.T) {
 	if _, err := NewStore(reopenedJournal); err == nil {
 		t.Fatal("replay accepted an unknown journal kind")
 	}
+}
+
+func TestStoreStopsWritesAfterUncertainJournalCommit(t *testing.T) {
+	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	store, err := NewStore(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.poisoned = fmt.Errorf("%w: injected", ErrJournalUncertain)
+	if _, err := store.Append(validExternalEvidenceForPoisonTest(t)); !errors.Is(err, ErrJournalUncertain) {
+		t.Fatalf("poisoned store append error = %v, want ErrJournalUncertain", err)
+	}
+	if got := len(store.List()); got != 0 {
+		t.Fatalf("poisoned store changed records: %d", got)
+	}
+}
+
+func validExternalEvidenceForPoisonTest(t *testing.T) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"evidence_type": "test", "subject_refs": []any{map[string]any{"kind": "session", "id": "session-1"}},
+		"observed_digest": hex.EncodeToString(make([]byte, 32)),
+	}
+	return mustJSONBridge(t, map[string]any{
+		"kind": "Evidence", "version": "1", "id": "poison-evidence",
+		"source_refs":  []any{map[string]any{"kind": "trajectory_result", "id": "poison-evidence"}},
+		"content_hash": payloadHashBridge(t, payload), "captured_at": "2026-07-28T00:00:00Z",
+		"authority_class": AuthorityUntrustedText, "freshness": map[string]any{"mode": "immutable", "valid_until": nil},
+		"status": "observed", "source": map[string]any{"id": "trajectory", "role": "trajectory"}, "payload": payload,
+	})
+}
+
+func payloadHashBridge(t *testing.T, payload any) string {
+	t.Helper()
+	digest := sha256.Sum256(mustJSONBridge(t, payload))
+	return hex.EncodeToString(digest[:])
 }
 
 func mustJSONBridge(t *testing.T, value any) []byte {

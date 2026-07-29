@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,6 +74,56 @@ func TestBinaryJournal_Replay(t *testing.T) {
 
 	if len(history) != 2 {
 		t.Fatalf("expected 2 items in replay, got %d", len(history))
+	}
+}
+
+func TestBinaryJournalRejectsSecondWriter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locked.journal")
+	j, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if _, err := OpenBinaryJournal(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second writer error = %v, want ErrLocked", err)
+	}
+}
+
+func TestBinaryJournalReconcilesAfterSyncError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync-error.journal")
+	j, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := true
+	j.syncFn = func() error {
+		if failed {
+			failed = false
+			return errors.New("injected sync failure")
+		}
+		return j.file.Sync()
+	}
+	if _, err := j.Append([]byte(`"event1"`)); err == nil {
+		t.Fatal("append unexpectedly hid injected sync failure")
+	}
+	if j.nextSeq != 2 {
+		t.Fatalf("nextSeq after sync-error reconciliation = %d, want 2", j.nextSeq)
+	}
+	if _, err := j.Append([]byte(`"event2"`)); err != nil {
+		t.Fatalf("append after reconciliation failed: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.nextSeq != 3 {
+		t.Fatalf("reopened nextSeq = %d, want 3", reopened.nextSeq)
 	}
 }
 

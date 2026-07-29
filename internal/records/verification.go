@@ -74,6 +74,9 @@ type bridgeReceipt struct {
 func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureHealthy(); err != nil {
+		return VerificationCommitResult{}, err
+	}
 
 	receipt, err := decodeBridgeReceipt(raw)
 	if err != nil {
@@ -108,7 +111,7 @@ func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationComm
 	}
 	sequence, err := s.journal.Append(payload)
 	if err != nil {
-		return VerificationCommitResult{}, fmt.Errorf("append verification commit: %w", err)
+		return VerificationCommitResult{}, s.poison(fmt.Errorf("append verification commit: %w", err))
 	}
 	s.applyPreparedVerification(prepared, sequence)
 	return VerificationCommitResult{Sequence: sequence, Records: prepared.records, Receipt: prepared.receipt}, nil
