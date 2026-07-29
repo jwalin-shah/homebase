@@ -27,6 +27,7 @@ type Server struct {
 	recordStore *records.Store
 	promotion   *promotion.Service
 	bridgeKey   ed25519.PublicKey
+	contractKey ed25519.PublicKey
 	attemptSvc  *application.AttemptService
 }
 
@@ -66,8 +67,18 @@ func NewServerWithPromotion(v *validation.Validator, s *signing.Signer, st *ledg
 // NewServerWithPromotionAndBridge combines the two owner-specific typed
 // ingress paths without weakening either authentication boundary.
 func NewServerWithPromotionAndBridge(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, bridgeKey ed25519.PublicKey) *Server {
+	server := NewServerWithAuthorities(v, s, st, rs, ps, nil, bridgeKey)
+	return server
+}
+
+// NewServerWithAuthorities wires the owner-authenticated Contract/Grant path,
+// transcript promotion, and Bridge verification path together. Each public
+// key is copied and an absent key leaves only that specific endpoint
+// unavailable.
+func NewServerWithAuthorities(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey) *Server {
 	server := NewServerWithBridge(v, s, st, rs, bridgeKey)
 	server.promotion = ps
+	server.contractKey = append(ed25519.PublicKey(nil), contractKey...)
 	return server
 }
 
@@ -121,6 +132,69 @@ func (s *Server) HandleAppendExternalRecord(w http.ResponseWriter, r *http.Reque
 		"existing": result.Existing,
 		"sequence": result.Sequence,
 	})
+}
+
+// HandleAppendContractGrant admits the approved Contract and scoped
+// CapabilityGrant as one owner-signed journal commit. Bridge and workers have
+// no route that can create either record.
+func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.contractKey) != ed25519.PublicKeySize {
+		http.Error(w, "Contract authority service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	var request struct {
+		Contract json.RawMessage `json:"contract"`
+		Grant    json.RawMessage `json:"grant"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid Contract/Grant JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one Contract/Grant bundle", http.StatusBadRequest)
+		return
+	}
+	canonical := rawCanonicalJSON(mustMarshalAuthorityRequest(request))
+	signature, err := decodeSignature(r.Header.Get("X-HomeBase-Contract-Signature"))
+	if err != nil || !ed25519.Verify(s.contractKey, canonical, signature) {
+		http.Error(w, "Contract authority signature failed", http.StatusUnauthorized)
+		return
+	}
+	result, err := s.recordStore.AppendContractAndGrant(request.Contract, request.Grant)
+	if err != nil {
+		switch {
+		case errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "failed to persist Contract/Grant", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if result.Existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
+		"contract_id": result.Contract.ID,
+		"grant_id":    result.Grant.ID,
+		"existing":    result.Existing,
+		"sequence":    result.Sequence,
+	})
+}
+
+func mustMarshalAuthorityRequest(value any) []byte {
+	raw, _ := json.Marshal(value)
+	return raw
 }
 
 // HandleAppendBridgeVerification accepts only a Bridge-signed transport

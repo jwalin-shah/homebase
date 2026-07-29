@@ -69,9 +69,11 @@ func main() {
 	// persistent authority keys are configured. The endpoint remains mounted in
 	// an unavailable state rather than silently generating ephemeral authority.
 	var promotionService *promotion.Service
-	if captainPublic, publicErr := loadKey("HOMEBASE_CAPTAIN_PUBLIC_KEY_HEX", "HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE", ed25519.PublicKeySize); publicErr == nil {
+	var captainPublic ed25519.PublicKey
+	if captainKey, publicErr := loadKey("HOMEBASE_CAPTAIN_PUBLIC_KEY_HEX", "HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE", ed25519.PublicKeySize); publicErr == nil {
+		captainPublic = ed25519.PublicKey(captainKey)
 		if receiptPrivate, privateErr := loadKey("HOMEBASE_RECEIPT_PRIVATE_KEY_HEX", "HOMEBASE_RECEIPT_PRIVATE_KEY_FILE", ed25519.PrivateKeySize); privateErr == nil {
-			promotionService, err = promotion.NewService(recordStore, promotion.Ed25519Verifier("captain", ed25519.PublicKey(captainPublic)), ed25519.PrivateKey(receiptPrivate), nil)
+			promotionService, err = promotion.NewService(recordStore, promotion.Ed25519Verifier("captain", captainPublic), ed25519.PrivateKey(receiptPrivate), nil)
 			if err != nil {
 				log.Printf("WARNING: transcript promotion unavailable: authority state could not be rebuilt")
 			}
@@ -89,7 +91,7 @@ func main() {
 	} else {
 		log.Printf("WARNING: Bridge verification unavailable: public key is not configured")
 	}
-	server := api.NewServerWithPromotionAndBridge(validator, signer, store, recordStore, promotionService, bridgePublic)
+	server := api.NewServerWithAuthorities(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
@@ -100,6 +102,7 @@ func main() {
 	// Engine decision path.
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
+	mux.HandleFunc("/api/v1/contracts/grants", server.HandleAppendContractGrant)
 	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerification)
 
 	// 6. Start the Engine

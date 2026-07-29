@@ -111,12 +111,13 @@ type storedPromotion struct {
 }
 
 type Store struct {
-	mu            sync.Mutex
-	journal       *journal.BinaryJournal
-	records       map[string]storedRecord
-	promotions    map[string]storedPromotion
-	verifications map[string]storedVerification
-	poisoned      error
+	mu             sync.Mutex
+	journal        *journal.BinaryJournal
+	records        map[string]storedRecord
+	promotions     map[string]storedPromotion
+	verifications  map[string]storedVerification
+	contractGrants map[string]storedContractGrant
+	poisoned       error
 }
 
 type storedRecord struct {
@@ -128,7 +129,7 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 	if j == nil {
 		return nil, fmt.Errorf("%w: journal is required", ErrInvalidRecord)
 	}
-	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification)}
+	s := &Store{journal: j, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification), contractGrants: make(map[string]storedContractGrant)}
 	if err := j.Replay(func(seq uint64, payload []byte) error {
 		envelope, err := journal.DecodeRecord(payload)
 		if err != nil {
@@ -169,6 +170,12 @@ func NewStore(j *journal.BinaryJournal) (*Store, error) {
 		if envelope.Kind == journal.RecordKindVerificationCommit {
 			if err := s.replayVerificationCommit(seq, envelope.Payload); err != nil {
 				return fmt.Errorf("verification commit journal entry %d: %w", seq, err)
+			}
+			return nil
+		}
+		if envelope.Kind == journal.RecordKindContractGrantCommit {
+			if err := s.replayContractGrantCommit(seq, envelope.Payload); err != nil {
+				return fmt.Errorf("contract/grant commit journal entry %d: %w", seq, err)
 			}
 			return nil
 		}

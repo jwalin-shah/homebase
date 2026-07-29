@@ -127,6 +127,65 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	}
 }
 
+func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	bundle := mustJSON(t, map[string]any{
+		"contract": json.RawMessage(bridgeContract(t, "contract-1")),
+		"grant":    json.RawMessage(bridgeGrant(t, "grant-1", "contract-1")),
+	})
+	sign := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Contract-Signature", sign(bundle))
+	response := httptest.NewRecorder()
+	server.HandleAppendContractGrant(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("first Contract/Grant status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after Contract/Grant append = %d, want 2", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Contract-Signature", sign(bundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendContractGrant(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate Contract/Grant status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/grants", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Contract-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	response = httptest.NewRecorder()
+	server.HandleAppendContractGrant(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("bad Contract authority signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func bridgeReceipt(t *testing.T) []byte {
 	t.Helper()
 	treeSHA := "0123456789012345678901234567890123456789"
