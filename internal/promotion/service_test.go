@@ -15,7 +15,14 @@ import (
 	"homebase/internal/records"
 )
 
-const contractFixtureRoot = "/Users/jwalinshah/projects/running-machine-contracts"
+const defaultContractFixtureRoot = "/Users/jwalinshah/projects/running-machine-contracts"
+
+func contractFixtureRoot() string {
+	if root := os.Getenv("RUNNING_MACHINE_CONTRACTS_ROOT"); root != "" {
+		return root
+	}
+	return defaultContractFixtureRoot
+}
 
 func TestPromoteFixtureDurableAndRestart(t *testing.T) {
 	raw := loadPromotionFixture(t, "valid-explicit-approval.json")
@@ -81,7 +88,7 @@ func TestPromoteFixtureDurableAndRestart(t *testing.T) {
 }
 
 func TestContractFixturesMatchGoBoundaryAcceptance(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join(contractFixtureRoot, "fixtures", "transcript-promotion", "*.json"))
+	paths, err := filepath.Glob(filepath.Join(contractFixtureRoot(), "fixtures", "transcript-promotion", "*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +191,7 @@ func TestPromoteRejectsTamperedTranscriptBeforeAuthentication(t *testing.T) {
 
 func loadPromotionFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(contractFixtureRoot, "fixtures", "transcript-promotion", name))
+	raw, err := os.ReadFile(filepath.Join(contractFixtureRoot(), "fixtures", "transcript-promotion", name))
 	if err != nil {
 		t.Fatal(err)
 	}
