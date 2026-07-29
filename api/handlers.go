@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"homebase/internal/application"
 	"homebase/internal/domain"
 	"homebase/internal/ledger"
+	"homebase/internal/records"
 	"homebase/internal/signing"
 	"homebase/internal/types"
 	"homebase/internal/validation"
@@ -14,16 +17,79 @@ import (
 
 // Server binds the HTTP layer to our formal Graph Engine.
 type Server struct {
-	validator *validation.Validator
-	signer    *signing.Signer
-	store     *ledger.Store
-	attemptSvc *application.AttemptService
+	validator   *validation.Validator
+	signer      *signing.Signer
+	store       *ledger.Store
+	recordStore *records.Store
+	attemptSvc  *application.AttemptService
 }
 
 // NewServer initializes the API.
 func NewServer(v *validation.Validator, s *signing.Signer, st *ledger.Store) *Server {
 	// For milestone 1, we use a mock repository (non-durable) since persistence is milestone 3.
 	return &Server{validator: v, signer: s, store: st, attemptSvc: application.NewAttemptService(application.NewMockAttemptRepository())}
+}
+
+// NewServerWithRecords adds the typed shared-record boundary without changing
+// the legacy decision endpoint. External HTTP callers are limited to
+// observations/proposals; authoritative records require an owner-specific
+// authenticated path.
+func NewServerWithRecords(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store) *Server {
+	server := NewServer(v, s, st)
+	server.recordStore = rs
+	return server
+}
+
+// HandleAppendExternalRecord is the only public ingress for Trajectory and
+// other untrusted producers. HomeBase validates the complete record envelope,
+// verifies its payload hash, and fsyncs it before returning success.
+func (s *Server) HandleAppendExternalRecord(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil {
+		http.Error(w, "record store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var raw json.RawMessage
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&raw); err != nil {
+		http.Error(w, "invalid record JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one JSON record", http.StatusBadRequest)
+		return
+	}
+	result, err := s.recordStore.AppendExternal(raw)
+	if err != nil {
+		switch {
+		case errors.Is(err, records.ErrAuthorityRequired):
+			http.Error(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "failed to persist record", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if result.Existing {
+		status = http.StatusOK
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id":       result.Record.ID,
+		"kind":     result.Record.Kind,
+		"existing": result.Existing,
+		"sequence": result.Sequence,
+	})
 }
 
 // RecordRequest is the JSON payload Orbit or Bridge sends to HomeBase.
@@ -79,11 +145,11 @@ func (s *Server) HandleRecordDecision(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, svcErr.Error(), http.StatusConflict)
 			return
 		}
-		
+
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	
+
 	// Execution successful, conclude attempt
 	cmd := domain.CommandConclude{AttemptID: aid}
 	if svcErr := s.attemptSvc.ExecuteCommand(r.Context(), cmd); svcErr != nil {

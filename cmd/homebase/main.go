@@ -10,7 +10,9 @@ import (
 
 	"homebase/api"
 	"homebase/internal/cache"
+	"homebase/internal/journal"
 	"homebase/internal/ledger"
+	"homebase/internal/records"
 	"homebase/internal/signing"
 	"homebase/internal/validation"
 )
@@ -25,6 +27,20 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize ledger store: %v", err)
 	}
 	defer store.Close()
+
+	recordJournalPath := os.Getenv("HOMEBASE_RECORD_JOURNAL")
+	if recordJournalPath == "" {
+		recordJournalPath = "homebase_records.journal"
+	}
+	recordJournal, err := journal.OpenBinaryJournal(recordJournalPath)
+	if err != nil {
+		log.Fatalf("FATAL: Failed to initialize typed record journal: %v", err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		log.Fatalf("FATAL: Failed to replay typed record journal: %v", err)
+	}
 
 	// 2. Initialize Cryptography (Integrity)
 	// In production, this key is loaded from a secure vault (e.g., AWS KMS or HashiCorp).
@@ -47,11 +63,12 @@ func main() {
 	validator := validation.NewValidator(neo4jClient, store)
 
 	// 4. Initialize the API Server
-	server := api.NewServer(validator, signer, store)
+	server := api.NewServerWithRecords(validator, signer, store, recordStore)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/decisions", server.HandleRecordDecision)
+	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 
 	// 6. Start the Engine
 	port := os.Getenv("PORT")

@@ -80,14 +80,21 @@ func (j *BinaryJournal) recover() error {
 		if !bytes.Equal(header[0:4], MagicBytes) {
 			return ErrInvalidMagic
 		}
+		if binary.BigEndian.Uint16(header[4:6]) != FormatVersion {
+			return fmt.Errorf("unsupported journal format version %d", binary.BigEndian.Uint16(header[4:6]))
+		}
 
 		seq := binary.BigEndian.Uint64(header[6:14])
 		length := binary.BigEndian.Uint32(header[14:18])
 		var prevHash [32]byte
 		copy(prevHash[:], header[18:50])
 
-		if lastSeq > 0 {
-			if seq <= lastSeq {
+		if lastSeq == 0 {
+			if seq != 1 || prevHash != ([32]byte{}) {
+				return ErrOutOfOrder
+			}
+		} else {
+			if seq != lastSeq+1 {
 				return ErrOutOfOrder
 			}
 			if prevHash != lastHash {
@@ -102,6 +109,9 @@ func (j *BinaryJournal) recover() error {
 				if err := j.file.Truncate(lastGoodOffset); err != nil {
 					return err
 				}
+				if err := j.file.Sync(); err != nil {
+					return err
+				}
 				break
 			}
 			return err
@@ -112,6 +122,9 @@ func (j *BinaryJournal) recover() error {
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				if err := j.file.Truncate(lastGoodOffset); err != nil {
+					return err
+				}
+				if err := j.file.Sync(); err != nil {
 					return err
 				}
 				break
@@ -184,8 +197,15 @@ func (j *BinaryJournal) Append(payload []byte) (uint64, error) {
 	record = append(record, payload...)
 	record = append(record, checksum[:]...)
 
-	if _, err := j.file.Write(record); err != nil {
-		return 0, err
+	for len(record) > 0 {
+		written, err := j.file.Write(record)
+		if err != nil {
+			return 0, err
+		}
+		if written == 0 {
+			return 0, io.ErrShortWrite
+		}
+		record = record[written:]
 	}
 
 	if err := j.file.Sync(); err != nil {
@@ -207,6 +227,8 @@ func (j *BinaryJournal) Replay(handler func(seq uint64, payload []byte) error) e
 	}
 	defer f.Close()
 
+	var lastSeq uint64
+	var lastHash [32]byte
 	for {
 		header := make([]byte, 50)
 		_, err := io.ReadFull(f, header)
@@ -215,6 +237,27 @@ func (j *BinaryJournal) Replay(handler func(seq uint64, payload []byte) error) e
 		}
 		if err != nil {
 			return err
+		}
+		if !bytes.Equal(header[0:4], MagicBytes) {
+			return ErrInvalidMagic
+		}
+		if binary.BigEndian.Uint16(header[4:6]) != FormatVersion {
+			return fmt.Errorf("unsupported journal format version %d", binary.BigEndian.Uint16(header[4:6]))
+		}
+		seq := binary.BigEndian.Uint64(header[6:14])
+		var previousHash [32]byte
+		copy(previousHash[:], header[18:50])
+		if lastSeq == 0 {
+			if seq != 1 || previousHash != ([32]byte{}) {
+				return ErrOutOfOrder
+			}
+		} else {
+			if seq != lastSeq+1 {
+				return ErrOutOfOrder
+			}
+			if previousHash != lastHash {
+				return fmt.Errorf("hash chain broken at seq %d", seq)
+			}
 		}
 
 		length := binary.BigEndian.Uint32(header[14:18])
@@ -238,10 +281,11 @@ func (j *BinaryJournal) Replay(handler func(seq uint64, payload []byte) error) e
 			return ErrCorruptData
 		}
 
-		seq := binary.BigEndian.Uint64(header[6:14])
 		if err := handler(seq, payload); err != nil {
 			return err
 		}
+		lastSeq = seq
+		lastHash = computed
 	}
 	return nil
 }

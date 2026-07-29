@@ -174,3 +174,81 @@ func TestBinaryJournal_TruncatedPayloadTail(t *testing.T) {
 		t.Fatalf("payload-tail recovery left truncated bytes: size=%d", info.Size())
 	}
 }
+
+func TestBinaryJournal_RejectsVersionAndSequenceGaps(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "invalid-header.journal")
+	j, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append([]byte(`"event1"`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append([]byte(`"event2"`)); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOffset := 50 + len([]byte(`"event1"`)) + 32
+	binary.BigEndian.PutUint64(content[secondOffset+6:secondOffset+14], 3)
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenBinaryJournal(path); err != ErrOutOfOrder {
+		t.Fatalf("sequence gap open error = %v, want %v", err, ErrOutOfOrder)
+	}
+
+	versionPath := filepath.Join(dir, "invalid-version.journal")
+	j2, err := OpenBinaryJournal(versionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j2.Append([]byte(`"event1"`)); err != nil {
+		t.Fatal(err)
+	}
+	j2.Close()
+	versionContent, err := os.ReadFile(versionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.BigEndian.PutUint16(versionContent[4:6], FormatVersion+1)
+	if err := os.WriteFile(versionPath, versionContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenBinaryJournal(versionPath); err == nil {
+		t.Fatal("unsupported journal version was accepted")
+	}
+}
+
+func TestBinaryJournal_ReplayChecksHashChain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "replay-chain.journal")
+	j, err := OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append([]byte(`"event1"`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append([]byte(`"event2"`)); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOffset := 50 + len([]byte(`"event1"`)) + 32
+	content[secondOffset+18] ^= 0xff
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Replay(func(seq uint64, payload []byte) error { return nil }); err == nil {
+		t.Fatal("replay accepted a broken hash chain")
+	}
+	j.Close()
+}

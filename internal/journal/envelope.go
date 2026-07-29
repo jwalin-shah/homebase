@@ -10,6 +10,7 @@ import (
 const (
 	RecordKindEventBatch            = "EventBatch"
 	RecordKindDecisionRecord        = "DecisionRecord"
+	RecordKindSharedRecord          = "SharedRecord"
 	RecordEnvelopeVersion    uint16 = 1
 )
 

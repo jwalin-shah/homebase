@@ -57,6 +57,11 @@ func (r *JournalAttemptRepository) replay() error {
 			// attempt reducer. Their owner validates them separately.
 			return nil
 		}
+		if kind == journal.RecordKindSharedRecord {
+			// Shared records have their own reducer and are intentionally not
+			// interpreted as attempt events.
+			return nil
+		}
 		if kind != journal.RecordKindEventBatch {
 			return fmt.Errorf("unsupported journal record kind: %s", kind)
 		}
