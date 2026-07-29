@@ -25,13 +25,15 @@ import (
 
 // Server binds the HTTP layer to our formal Graph Engine.
 type Server struct {
-	validator   *validation.Validator
-	signer      *signing.Signer
-	store       *ledger.Store
-	recordStore *records.Store
-	promotion   *promotion.Service
-	bridgeKey   ed25519.PublicKey
-	contractKey ed25519.PublicKey
+	validator     *validation.Validator
+	signer        *signing.Signer
+	store         *ledger.Store
+	recordStore   *records.Store
+	promotion     *promotion.Service
+	bridgeKey     ed25519.PublicKey
+	verifierKey   ed25519.PublicKey
+	verifierKeyID string
+	contractKey   ed25519.PublicKey
 	// admissionPrivate signs the response to Bridge's read-only authority
 	// check. Request authentication alone is insufficient: without this key,
 	// a local proxy could forge a matching 200 response after the request was
@@ -97,6 +99,16 @@ func NewServerWithAuthorities(v *validation.Validator, s *signing.Signer, st *le
 func NewServerWithAuthoritiesAndAdmissionResponse(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey, admissionPrivate ed25519.PrivateKey) *Server {
 	server := NewServerWithAuthorities(v, s, st, rs, ps, contractKey, bridgeKey)
 	server.admissionPrivate = append(ed25519.PrivateKey(nil), admissionPrivate...)
+	return server
+}
+
+// NewServerWithAuthoritiesAndAdmissionResponseAndVerifier adds the enrolled
+// verifier public key. The Bridge transport key authenticates the caller;
+// this separate key authenticates the verifier-owned receipt itself.
+func NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey, admissionPrivate ed25519.PrivateKey, verifierPublic ed25519.PublicKey, verifierKeyID string) *Server {
+	server := NewServerWithAuthoritiesAndAdmissionResponse(v, s, st, rs, ps, contractKey, bridgeKey, admissionPrivate)
+	server.verifierKey = append(ed25519.PublicKey(nil), verifierPublic...)
+	server.verifierKeyID = strings.TrimSpace(verifierKeyID)
 	return server
 }
 
@@ -439,6 +451,10 @@ func (s *Server) HandleAppendBridgeVerification(w http.ResponseWriter, r *http.R
 	signature, err := decodeSignature(r.Header.Get("X-Bridge-Verification-Signature"))
 	if err != nil || !ed25519.Verify(s.bridgeKey, rawCanonicalJSON(raw), signature) {
 		http.Error(w, "Bridge verification signature failed", http.StatusUnauthorized)
+		return
+	}
+	if err := records.VerifyBridgeReceiptAttestation(raw, s.verifierKey, s.verifierKeyID); err != nil {
+		http.Error(w, "verifier attestation failed: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 	result, err := s.recordStore.AppendBridgeVerificationSubmission(raw)

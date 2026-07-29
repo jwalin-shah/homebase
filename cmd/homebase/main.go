@@ -98,7 +98,16 @@ func main() {
 	} else {
 		log.Printf("WARNING: Bridge admission responses unavailable: HomeBase response signing key is not configured")
 	}
-	server := api.NewServerWithAuthoritiesAndAdmissionResponse(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate)
+	var verifierPublic ed25519.PublicKey
+	verifierKeyID := strings.TrimSpace(os.Getenv("HOMEBASE_VERIFIER_KEY_ID"))
+	if verifierKeyID == "" {
+		log.Printf("WARNING: production verifier receipts unavailable: HOMEBASE_VERIFIER_KEY_ID is not configured")
+	} else if verifierKey, verifierErr := loadKey("HOMEBASE_VERIFIER_PUBLIC_KEY_HEX", "HOMEBASE_VERIFIER_PUBLIC_KEY_FILE", ed25519.PublicKeySize); verifierErr == nil {
+		verifierPublic = ed25519.PublicKey(verifierKey)
+	} else {
+		log.Printf("WARNING: production verifier receipts unavailable: %v", verifierErr)
+	}
+	server := api.NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()

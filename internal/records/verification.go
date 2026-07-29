@@ -6,13 +6,20 @@ package records
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"homebase/internal/journal"
 	"sort"
+	"strings"
 	"time"
+)
+
+const (
+	productionVerifierID = "bridge:verifier:v2"
+	attestationScheme    = "ed25519-content-hash-v1"
 )
 
 type VerificationCommitResult struct {
@@ -62,27 +69,65 @@ type bridgeProvenance struct {
 	CacheStatus       string            `json:"cache_status"`
 }
 
+type bridgeAttestation struct {
+	Scheme    string `json:"scheme"`
+	KeyID     string `json:"key_id"`
+	Signature string `json:"signature"`
+}
+
 // bridgeReceipt is the transport shape emitted by Bridge. tree_sha and
 // worker_statement are transport-only fields; the durable HomeBase payload
 // intentionally remains the schema-defined VerificationReceipt payload.
 type bridgeReceipt struct {
-	Kind            string        `json:"kind"`
-	Version         string        `json:"version"`
-	ID              string        `json:"id"`
-	ContentHash     string        `json:"content_hash"`
-	TaskID          string        `json:"task_id"`
-	ContractID      string        `json:"contract_id"`
-	GrantID         string        `json:"grant_id"`
-	WorkerID        string        `json:"worker_id"`
-	VerifierID      string        `json:"verifier_id"`
-	TreeSHA         string        `json:"tree_sha"`
-	TreeDigest      string        `json:"tree_digest"`
-	Subject         bridgeSubject `json:"subject"`
-	Checks          []bridgeCheck `json:"checks"`
-	EvidenceRefs    []SourceRef   `json:"evidence_refs"`
-	WorkerClaimRef  SourceRef     `json:"worker_claim_ref"`
-	VerifiedAt      string        `json:"verified_at"`
-	WorkerStatement string        `json:"worker_statement"`
+	Kind            string             `json:"kind"`
+	Version         string             `json:"version"`
+	ID              string             `json:"id"`
+	ContentHash     string             `json:"content_hash"`
+	TaskID          string             `json:"task_id"`
+	ContractID      string             `json:"contract_id"`
+	GrantID         string             `json:"grant_id"`
+	WorkerID        string             `json:"worker_id"`
+	VerifierID      string             `json:"verifier_id"`
+	TreeSHA         string             `json:"tree_sha"`
+	TreeDigest      string             `json:"tree_digest"`
+	Subject         bridgeSubject      `json:"subject"`
+	Checks          []bridgeCheck      `json:"checks"`
+	EvidenceRefs    []SourceRef        `json:"evidence_refs"`
+	WorkerClaimRef  SourceRef          `json:"worker_claim_ref"`
+	VerifiedAt      string             `json:"verified_at"`
+	WorkerStatement string             `json:"worker_statement"`
+	Attestation     *bridgeAttestation `json:"attestation,omitempty"`
+}
+
+// VerifyBridgeReceiptAttestation checks the verifier-only signature after the
+// Bridge transport signature has authenticated the submitting client. The two
+// signatures answer different questions and must not be conflated.
+func VerifyBridgeReceiptAttestation(raw []byte, publicKey ed25519.PublicKey, expectedKeyID string) error {
+	receipt, err := decodeBridgeReceipt(raw)
+	if err != nil {
+		return err
+	}
+	if receipt.VerifierID != productionVerifierID {
+		return nil
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("verifier attestation public key is not configured")
+	}
+	if receipt.Attestation == nil || receipt.Attestation.Scheme != attestationScheme || strings.TrimSpace(receipt.Attestation.KeyID) == "" {
+		return invalid("production verification receipt is missing verifier attestation")
+	}
+	if expectedKeyID != "" && receipt.Attestation.KeyID != expectedKeyID {
+		return invalid("verifier attestation key id is not enrolled")
+	}
+	signature, err := hex.DecodeString(receipt.Attestation.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return invalid("verifier attestation signature is malformed")
+	}
+	message := []byte("running-machine-verifier-attestation:v1:" + receipt.ID + ":" + receipt.ContentHash + "\x00" + receipt.WorkerStatement)
+	if !ed25519.Verify(publicKey, message, signature) {
+		return invalid("verifier attestation signature did not verify")
+	}
+	return nil
 }
 
 func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationCommitResult, error) {
@@ -469,7 +514,7 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 		"task_id": true, "contract_id": true, "grant_id": true, "worker_id": true,
 		"verifier_id": true, "tree_sha": true, "tree_digest": true, "subject": true,
 		"checks": true, "evidence_refs": true, "worker_claim_ref": true,
-		"verified_at": true, "worker_statement": true,
+		"verified_at": true, "worker_statement": true, "attestation": true,
 	}
 	for key := range fields {
 		if !allowed[key] {
@@ -490,6 +535,15 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 	}
 	if receipt.WorkerID == receipt.VerifierID {
 		return bridgeReceipt{}, invalid("Bridge verification receipt worker and verifier identities must be distinct")
+	}
+	if receipt.VerifierID == productionVerifierID {
+		if receipt.Attestation == nil || receipt.Attestation.Scheme != attestationScheme || strings.TrimSpace(receipt.Attestation.KeyID) == "" {
+			return bridgeReceipt{}, invalid("production verification receipt attestation is missing or malformed")
+		}
+		signature, err := hex.DecodeString(receipt.Attestation.Signature)
+		if err != nil || len(signature) != ed25519.SignatureSize {
+			return bridgeReceipt{}, invalid("production verification receipt attestation signature is malformed")
+		}
 	}
 	if receipt.ID != "receipt:"+receipt.TaskID+":"+receipt.TreeSHA {
 		return bridgeReceipt{}, invalid("Bridge verification receipt id is not bound to task and tree")
