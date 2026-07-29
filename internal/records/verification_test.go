@@ -50,6 +50,96 @@ func digestBridgeTree(treeSHA string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func bridgeSubmissionWithProvenance(t *testing.T, contractID, grantID, treeSHA string) []byte {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(bridgeSubmission(t, contractID, grantID, treeSHA), &document); err != nil {
+		t.Fatal(err)
+	}
+	command := []string{"go", "test", "./..."}
+	commandDigest, err := canonicalHashAnyValue(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environmentDigest, err := canonicalHashAnyValue([]string{"GOFLAGS=-mod=mod", "PATH=/usr/bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDigest := sha256.Sum256([]byte("proof output"))
+	provenance := map[string]any{
+		"schema_version": "1", "command": command, "command_digest": commandDigest,
+		"environment_digest": environmentDigest, "output_digest": hex.EncodeToString(outputDigest[:]),
+		"log_digest": hex.EncodeToString(outputDigest[:]), "checkout_sha": treeSHA,
+		"verifier_version": "bridge-verifier/v2", "tool_versions": map[string]string{"bridge-verifier": "bridge-verifier/v2"}, "cache_status": "miss",
+	}
+	checks := document["checks"].([]any)
+	checks[0].(map[string]any)["provenance"] = provenance
+	durablePayload := map[string]any{
+		"task_id": document["task_id"], "contract_id": document["contract_id"], "grant_id": document["grant_id"],
+		"worker_id": document["worker_id"], "verifier_id": document["verifier_id"], "tree_digest": document["tree_digest"],
+		"subject": document["subject"], "checks": []any{map[string]any{
+			"name": checks[0].(map[string]any)["name"], "result": checks[0].(map[string]any)["result"],
+			"proof_command": checks[0].(map[string]any)["proof_command"], "provenance": provenance,
+			"evidence_ref": checks[0].(map[string]any)["evidence_ref"],
+		}},
+		"evidence_refs": document["evidence_refs"], "worker_claim_ref": document["worker_claim_ref"], "verified_at": document["verified_at"],
+	}
+	contentHash, err := canonicalHashValue(durablePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document["content_hash"] = contentHash
+	return mustJSONBridge(t, document)
+}
+
+func TestBridgeReceiptProvenanceIsAuthenticated(t *testing.T) {
+	tree := "0123456789012345678901234567890123456789"
+	if _, err := decodeBridgeReceipt(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", tree)); err != nil {
+		t.Fatalf("decode provenance receipt: %v", err)
+	}
+}
+
+func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
+	path := t.TempDir() + "/records.journal"
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	store, err := NewStore(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.AppendBridgeVerificationSubmission(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789"))
+	if err != nil {
+		t.Fatalf("append provenance receipt: %v", err)
+	}
+	if result.Receipt.Kind != "VerificationReceipt" || len(result.Records) != 3 {
+		t.Fatalf("unexpected provenance submission result: %+v", result)
+	}
+	fields, err := objectFields(result.Receipt.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks, err := arrayValues(fields["checks"])
+	if err != nil || len(checks) != 1 {
+		t.Fatalf("durable checks = %v, err=%v", checks, err)
+	}
+	check, err := objectFields(checks[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := check["provenance"]; !ok {
+		t.Fatal("durable receipt dropped provenance")
+	}
+}
+
 func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing.T) {
 	path := t.TempDir() + "/records.journal"
 	j, err := journal.OpenBinaryJournal(path)

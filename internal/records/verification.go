@@ -42,10 +42,24 @@ type bridgeSubject struct {
 }
 
 type bridgeCheck struct {
-	Name         string    `json:"name"`
-	Result       string    `json:"result"`
-	ProofCommand string    `json:"proof_command"`
-	EvidenceRef  SourceRef `json:"evidence_ref"`
+	Name         string            `json:"name"`
+	Result       string            `json:"result"`
+	ProofCommand string            `json:"proof_command"`
+	EvidenceRef  SourceRef         `json:"evidence_ref"`
+	Provenance   *bridgeProvenance `json:"provenance,omitempty"`
+}
+
+type bridgeProvenance struct {
+	SchemaVersion     string            `json:"schema_version"`
+	Command           []string          `json:"command"`
+	CommandDigest     string            `json:"command_digest"`
+	EnvironmentDigest string            `json:"environment_digest"`
+	OutputDigest      string            `json:"output_digest"`
+	LogDigest         string            `json:"log_digest"`
+	CheckoutSHA       string            `json:"checkout_sha"`
+	VerifierVersion   string            `json:"verifier_version"`
+	ToolVersions      map[string]string `json:"tool_versions"`
+	CacheStatus       string            `json:"cache_status"`
 }
 
 // bridgeReceipt is the transport shape emitted by Bridge. tree_sha and
@@ -491,6 +505,13 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 		if check.Name == "" || check.Result != "passed" || check.ProofCommand == "" || check.EvidenceRef.Kind != "proof" || check.EvidenceRef.ID == "" || check.EvidenceRef != receipt.EvidenceRefs[index] || seen[check.EvidenceRef.ID] {
 			return bridgeReceipt{}, invalid("Bridge verification receipt check %d is invalid", index)
 		}
+		if check.Provenance == nil {
+			if receipt.VerifierID == "bridge:verifier" {
+				return bridgeReceipt{}, invalid("Bridge verification receipt check %d is missing provenance", index)
+			}
+		} else if err := validateBridgeProvenance(*check.Provenance, receipt.TreeSHA); err != nil {
+			return bridgeReceipt{}, invalid("Bridge verification receipt check %d provenance: %v", index, err)
+		}
 		seen[check.EvidenceRef.ID] = true
 	}
 	if err := verifyBridgeReceiptContentHash(receipt); err != nil {
@@ -502,10 +523,16 @@ func decodeBridgeReceipt(raw []byte) (bridgeReceipt, error) {
 func verifyBridgeReceiptContentHash(receipt bridgeReceipt) error {
 	checks := make([]any, 0, len(receipt.Checks))
 	for _, check := range receipt.Checks {
-		checks = append(checks, map[string]any{
-			"name": check.Name, "result": check.Result,
+		value := map[string]any{
+			"name":         check.Name,
+			"result":       check.Result,
 			"evidence_ref": map[string]any{"kind": check.EvidenceRef.Kind, "id": check.EvidenceRef.ID},
-		})
+		}
+		if check.Provenance != nil {
+			value["proof_command"] = check.ProofCommand
+			value["provenance"] = bridgeProvenanceAsAny(*check.Provenance)
+		}
+		checks = append(checks, value)
 	}
 	payload := map[string]any{
 		"task_id": receipt.TaskID, "contract_id": receipt.ContractID, "grant_id": receipt.GrantID,
@@ -638,9 +665,71 @@ func buildBridgeRecords(receipt bridgeReceipt, s *Store) ([]json.RawMessage, err
 func durableChecks(checks []bridgeCheck) []any {
 	result := make([]any, 0, len(checks))
 	for _, check := range checks {
-		result = append(result, map[string]any{"name": check.Name, "result": check.Result, "evidence_ref": map[string]any{"kind": check.EvidenceRef.Kind, "id": check.EvidenceRef.ID}})
+		value := map[string]any{"name": check.Name, "result": check.Result, "evidence_ref": map[string]any{"kind": check.EvidenceRef.Kind, "id": check.EvidenceRef.ID}}
+		if check.Provenance != nil {
+			value["proof_command"] = check.ProofCommand
+			value["provenance"] = bridgeProvenanceAsAny(*check.Provenance)
+		}
+		result = append(result, value)
 	}
 	return result
+}
+
+func validateBridgeProvenance(provenance bridgeProvenance, treeSHA string) error {
+	if provenance.SchemaVersion != "1" || len(provenance.Command) == 0 || provenance.CheckoutSHA != treeSHA || provenance.VerifierVersion == "" {
+		return fmt.Errorf("identity is incomplete or not bound to tree")
+	}
+	for _, arg := range provenance.Command {
+		if arg == "" {
+			return fmt.Errorf("command contains an empty argument")
+		}
+	}
+	commandDigest, err := canonicalHashAnyValue(provenance.Command)
+	if err != nil || commandDigest != provenance.CommandDigest {
+		return fmt.Errorf("command digest does not match command")
+	}
+	if !sha256Pattern.MatchString(provenance.EnvironmentDigest) || !sha256Pattern.MatchString(provenance.OutputDigest) || !sha256Pattern.MatchString(provenance.LogDigest) {
+		return fmt.Errorf("digests are incomplete")
+	}
+	if len(provenance.ToolVersions) == 0 {
+		return fmt.Errorf("tool_versions are required")
+	}
+	for name, version := range provenance.ToolVersions {
+		if name == "" || version == "" {
+			return fmt.Errorf("tool_versions contain an empty entry")
+		}
+	}
+	if provenance.CacheStatus != "hit" && provenance.CacheStatus != "miss" && provenance.CacheStatus != "not_applicable" {
+		return fmt.Errorf("cache_status %q is unsupported", provenance.CacheStatus)
+	}
+	return nil
+}
+
+func canonicalHashAnyValue(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := CanonicalJSONValue(raw)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func bridgeProvenanceAsAny(provenance bridgeProvenance) map[string]any {
+	tools := make(map[string]any, len(provenance.ToolVersions))
+	for name, version := range provenance.ToolVersions {
+		tools[name] = version
+	}
+	return map[string]any{
+		"schema_version": provenance.SchemaVersion, "command": append([]string(nil), provenance.Command...),
+		"command_digest": provenance.CommandDigest, "environment_digest": provenance.EnvironmentDigest,
+		"output_digest": provenance.OutputDigest, "log_digest": provenance.LogDigest,
+		"checkout_sha": provenance.CheckoutSHA, "verifier_version": provenance.VerifierVersion,
+		"tool_versions": tools, "cache_status": provenance.CacheStatus,
+	}
 }
 
 func sourceRefAsAny(ref SourceRef) map[string]any {

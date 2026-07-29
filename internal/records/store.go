@@ -1008,6 +1008,10 @@ func validatePayload(kind, authority string, raw []byte) error {
 		if err := json.Unmarshal(fields["tree_digest"], &treeDigest); err != nil || subjectDigest != treeDigest {
 			return invalid("VerificationReceipt subject digest must equal tree_digest")
 		}
+		var subjectName string
+		if err := json.Unmarshal(subject["name"], &subjectName); err != nil || subjectName == "" {
+			return invalid("VerificationReceipt subject.name must be non-empty")
+		}
 		for key := range subject {
 			if key != "kind" && key != "name" && key != "digest" {
 				return invalid("VerificationReceipt subject has unknown field %q", key)
@@ -1023,7 +1027,7 @@ func validatePayload(kind, authority string, raw []byte) error {
 				return invalid("VerificationReceipt check %d: %v", i, err)
 			}
 			for key := range check {
-				if key != "name" && key != "result" && key != "evidence_ref" {
+				if key != "name" && key != "result" && key != "evidence_ref" && key != "proof_command" && key != "provenance" {
 					return invalid("VerificationReceipt check has unknown field %q", key)
 				}
 			}
@@ -1035,6 +1039,20 @@ func validatePayload(kind, authority string, raw []byte) error {
 			}
 			if err := requireSourceRef(check["evidence_ref"], "check.evidence_ref"); err != nil {
 				return invalid("VerificationReceipt check %d: %v", i, err)
+			}
+			if rawProvenance, ok := check["provenance"]; ok {
+				if _, ok := check["proof_command"]; !ok {
+					return invalid("VerificationReceipt check %d with provenance is missing proof_command", i)
+				}
+				var provenance bridgeProvenance
+				if err := json.Unmarshal(rawProvenance, &provenance); err != nil {
+					return invalid("VerificationReceipt check %d provenance: %v", i, err)
+				}
+				if err := validateBridgeProvenance(provenance, subjectName); err != nil {
+					return invalid("VerificationReceipt check %d provenance: %v", i, err)
+				}
+			} else if receiptVerifierID, ok := stringValue(fields["verifier_id"]); ok && receiptVerifierID == "bridge:verifier" {
+				return invalid("VerificationReceipt check %d is missing provenance for bridge:verifier", i)
 			}
 		}
 		for _, key := range []string{"evidence_refs"} {
