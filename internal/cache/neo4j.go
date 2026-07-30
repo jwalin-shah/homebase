@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -19,6 +20,10 @@ type Client struct {
 
 // NewClient creates a new Neo4j client
 func NewClient(uri, user, pass string) (*Client, error) {
+	if strings.TrimSpace(pass) == "" {
+		return nil, fmt.Errorf("neo4j password is required; refusing an implicit credential")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

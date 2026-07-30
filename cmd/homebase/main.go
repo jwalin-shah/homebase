@@ -57,10 +57,13 @@ func main() {
 
 	// 2.5 Initialize the Neo4j Ontology (The Firewall)
 	// This physically enforces Coyle's "Ontology at the Ledger" rule.
-	neo4jClient, err := cache.NewClient("bolt://localhost:7687", "neo4j", "password")
+	neo4jPassword := strings.TrimSpace(os.Getenv("NEO4J_PASSWORD"))
+	if neo4jPassword == "" {
+		log.Fatal("FATAL: NEO4J_PASSWORD is required; refusing to disable the Axiom Firewall")
+	}
+	neo4jClient, err := cache.NewClient("bolt://localhost:7687", "neo4j", neo4jPassword)
 	if err != nil {
-		// Log warning but continue for local dev if Neo4j is down
-		fmt.Printf("WARNING: Neo4j down, Axiom Firewall disabled: %v\n", err)
+		log.Fatalf("FATAL: Neo4j/Axiom Firewall unavailable: %v", err)
 	}
 
 	// 3. Initialize the Axiom Firewall Validator
