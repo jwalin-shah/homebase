@@ -1,0 +1,35 @@
+{
+  "id": "homebase-2026-07-29-neo4j-firewall-boundary",
+  "source": "HomeBase security promotion review",
+  "severity": "P1",
+  "claim": "HomeBase must not start its decision ledger with the Axiom Firewall disabled or with an implicit Neo4j credential.",
+  "evidence": [
+    {
+      "path": "cmd/homebase/main.go:39-48",
+      "observation": "Startup now trims NEO4J_PASSWORD, rejects it when absent, and terminates before constructing the validator."
+    },
+    {
+      "path": "internal/cache/neo4j.go:21-25",
+      "observation": "The Neo4j client constructor rejects blank credentials before creating a driver or attempting connectivity."
+    },
+    {
+      "path": "internal/cache/neo4j_test.go:9-18",
+      "observation": "A focused regression test proves whitespace-only credentials fail closed."
+    }
+  ],
+  "root_cause": "The prior startup path logged a warning and continued when Neo4j was unavailable, allowing the Axiom Firewall to be disabled; the first isolated fix also omitted the strings import and therefore could not compile.",
+  "root_cause_status": "confirmed",
+  "discriminator": {
+    "check": "go test ./... -count=1 && go vet ./...",
+    "result": "The initial promotion failed on undefined strings.TrimSpace; after adding the import, the full HomeBase suite and vet pass."
+  },
+  "invariant": "HomeBase startup is admitted only when the Axiom Firewall has a non-blank credential and a constructible Neo4j client; missing infrastructure or credentials cannot degrade into an apparently running unprotected ledger.",
+  "regression": {
+    "name": "HomeBase firewall startup gate",
+    "command": "go test ./... -count=1 && go vet ./...",
+    "expected": "exit 0; blank credentials are rejected by the client test and the startup path cannot compile or continue with the firewall disabled"
+  },
+  "gate": "Reject promotion if HomeBase can start without Neo4j/Axiom Firewall admission, if the credential is blank, or if the security patch is not covered by a full compile/test/vet pass.",
+  "status": "mitigated",
+  "resolution": "Made Neo4j mandatory at startup, rejected blank credentials in the client, added the focused test, and corrected the missing strings import exposed by the promotion suite."
+}
