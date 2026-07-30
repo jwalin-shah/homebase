@@ -21,12 +21,12 @@ func TestEffect_LateStaleObservation(t *testing.T) {
 	// Lease expires, Claim 2
 	currentTime += 20
 	state, version = repo.Load(effectID)
-	
+
 	cmdRetry := domain.CommandRetryEffect{EffectID: effectID}
 	decision = domain.DecideEffect(state, cmdRetry)
 	repo.Append(effectID, version, decision.Events)
 	state, version = repo.Load(effectID)
-	
+
 	cmdClaim2 := domain.CommandClaimEffect{EffectID: effectID, WorkerID: "worker-2", ExpectedVersion: int(version), LeaseUntil: currentTime + 10, CurrentTime: currentTime}
 	decision = domain.DecideEffect(state, cmdClaim2)
 	repo.Append(effectID, version, decision.Events)
@@ -44,14 +44,14 @@ func TestEffect_LateStaleObservation(t *testing.T) {
 	if finalState.Phase != domain.EffectClaimed || finalState.ClaimEpoch != 2 {
 		t.Fatalf("expected ownership by epoch 2, got %v (epoch %v)", finalState.Phase, finalState.ClaimEpoch)
 	}
-	
+
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-STALE-002",
+		ID:       "EVD-M5-STALE-002",
 		ClaimIDs: []string{"CLM-M5-001"},
 		TestName: "TestEffect_LateStaleObservation",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		Inputs:   map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{
-			"stale_rejected": true,
+			"stale_rejected":      true,
 			"ownership_unchanged": true,
 		},
 	})
@@ -84,10 +84,10 @@ func TestEffect_DuplicateObservation(t *testing.T) {
 	}
 
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-DUP-003",
-		ClaimIDs: []string{"CLM-M5-001"},
-		TestName: "TestEffect_DuplicateObservation",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		ID:         "EVD-M5-DUP-003",
+		ClaimIDs:   []string{"CLM-M5-001"},
+		TestName:   "TestEffect_DuplicateObservation",
+		Inputs:     map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{"handled": true},
 	})
 }
@@ -99,7 +99,7 @@ func TestEffect_RetryExhaustion(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		state, version := repo.Load(effectID)
-		
+
 		if i > 0 {
 			cmdRetry := domain.CommandRetryEffect{EffectID: effectID}
 			decision := domain.DecideEffect(state, cmdRetry)
@@ -133,12 +133,12 @@ func TestEffect_RetryExhaustion(t *testing.T) {
 	}
 
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-RETRY-EXHAUST-005",
+		ID:       "EVD-M5-RETRY-EXHAUST-005",
 		ClaimIDs: []string{"CLM-M5-003"},
 		TestName: "TestEffect_RetryExhaustion",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		Inputs:   map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{
-			"final_state": finalState.Phase,
+			"final_state":           finalState.Phase,
 			"max_retries_respected": true,
 		},
 	})

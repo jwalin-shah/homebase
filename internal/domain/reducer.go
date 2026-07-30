@@ -9,7 +9,7 @@ func Decide(state AttemptState, command Command) Decision {
 	// Delegate entire semantic slice to Dafny
 	dafnyState := toDafnyState(state)
 	dafnyCmd := toDafnyCommand(command)
-	
+
 	dafnyDecision := dafny_reducer.Companion_Default___.Decide(dafnyState, dafnyCmd)
 	return fromDafnyDecision(dafnyDecision)
 }
@@ -19,7 +19,7 @@ func Apply(state AttemptState, event Event) AttemptState {
 	// Delegate entire semantic slice to Dafny
 	dafnyState := toDafnyState(state)
 	dafnyEvent := toDafnyEvent(event)
-	
+
 	dafnyNewState := dafny_reducer.Companion_Default___.Apply(dafnyState, dafnyEvent)
 	return fromDafnyState(dafnyNewState, state.ID, state.Version)
 }

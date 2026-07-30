@@ -121,10 +121,10 @@ func TestEffect_UnknownOutcomeRouting(t *testing.T) {
 			}
 
 			emitEvidence(t, Evidence{
-				ID: "EVD-M5B-" + tt.name,
-				ClaimIDs: []string{"CLM-M5B-001", "CLM-M5B-002", "CLM-M5B-003", "CLM-M5B-004"},
-				TestName: "TestEffect_UnknownOutcomeRouting/" + tt.name,
-				Inputs: map[string]interface{}{"capabilities": tt.caps},
+				ID:         "EVD-M5B-" + tt.name,
+				ClaimIDs:   []string{"CLM-M5B-001", "CLM-M5B-002", "CLM-M5B-003", "CLM-M5B-004"},
+				TestName:   "TestEffect_UnknownOutcomeRouting/" + tt.name,
+				Inputs:     map[string]interface{}{"capabilities": tt.caps},
 				Assertions: map[string]interface{}{"expected_phase": tt.expectedPhase, "event_type_matched": true},
 			})
 		})

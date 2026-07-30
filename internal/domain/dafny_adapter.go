@@ -1,8 +1,8 @@
 package domain
 
 import (
-	dafny_reducer "homebase/internal/dafny_reducer"
 	"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
+	dafny_reducer "homebase/internal/dafny_reducer"
 )
 
 // toDafnyState converts Go AttemptState to Dafny AttemptState

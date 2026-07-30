@@ -2,9 +2,20 @@ package cache
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestNewClientRejectsMissingPassword(t *testing.T) {
+	_, err := NewClient("neo4j://localhost:7687", "neo4j", "   ")
+	if err == nil {
+		t.Fatal("expected missing password to fail closed")
+	}
+	if !strings.Contains(err.Error(), "refusing an implicit credential") {
+		t.Fatalf("error = %q, want explicit fail-closed error", err)
+	}
+}
 
 // TestClient_NewClient_Nil tests creating client with nil driver
 func TestClient_CreateDecisionNode_NilClient(t *testing.T) {

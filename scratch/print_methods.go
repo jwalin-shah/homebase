@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"reflect"
 	"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
+	"reflect"
 )
 
 func main() {

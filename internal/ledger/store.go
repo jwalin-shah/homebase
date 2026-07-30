@@ -49,7 +49,7 @@ func (s *Store) Append(env DSSEEnvelope) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
-	
+
 	// Append newline for JSONL format
 	data = append(data, '\n')
 

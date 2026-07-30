@@ -3,8 +3,8 @@ package application
 import (
 	"context"
 	"errors"
-	"sync"
 	"homebase/internal/domain"
+	"sync"
 )
 
 // MockAttemptRepository is an explicitly non-durable in-memory repository for Milestone 1.

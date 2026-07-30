@@ -22,10 +22,10 @@ func TestEffect_CrashBeforeExecution(t *testing.T) {
 	repo.Append(effectID, version, decision.Events)
 
 	// Crash before executor invocation (no executor.Execute called)
-	
+
 	// Fast forward past lease
 	currentTime = leaseUntil + 1
-	
+
 	// Reclaim
 	state, version = repo.Load(effectID)
 	cmdRetry := domain.CommandRetryEffect{EffectID: effectID}
@@ -44,7 +44,7 @@ func TestEffect_CrashBeforeExecution(t *testing.T) {
 	fp := getFingerprint("req-crash-before")
 	executor.PushOutcome(effectID, PlannedOutcome{Action: "Success", Reason: ""})
 	outcome, _ := executor.Execute(context.Background(), effectID, "idem-1", fp)
-	
+
 	// Observe
 	state, version = repo.Load(effectID)
 	cmdObs := domain.CommandObserveEffect{EffectID: effectID, WorkerID: "worker-2", ClaimEpoch: state.ClaimEpoch, Outcome: outcome}
@@ -52,16 +52,16 @@ func TestEffect_CrashBeforeExecution(t *testing.T) {
 	repo.Append(effectID, version, decision.Events)
 
 	op := executor.Applied["idem-1"]
-	
+
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-CRASH-006",
+		ID:       "EVD-M5-CRASH-006",
 		ClaimIDs: []string{"CLM-M5-001", "CLM-M5-004"},
 		TestName: "TestEffect_CrashBeforeExecution",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		Inputs:   map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{
 			"remote_application_count": op.ApplyCount,
-			"execution_attempt_count": op.InvocationCount,
-			"idempotency_key_reused": false,
+			"execution_attempt_count":  op.InvocationCount,
+			"idempotency_key_reused":   false,
 		},
 	})
 }
@@ -88,10 +88,10 @@ func TestEffect_UnknownOutcome(t *testing.T) {
 	}
 
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-UNKNOWN-004",
-		ClaimIDs: []string{"CLM-M5-004"},
-		TestName: "TestEffect_UnknownOutcome",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		ID:         "EVD-M5-UNKNOWN-004",
+		ClaimIDs:   []string{"CLM-M5-004"},
+		TestName:   "TestEffect_UnknownOutcome",
+		Inputs:     map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{"final_state": "OutcomeUnknown"},
 	})
 }
@@ -119,10 +119,10 @@ func TestEffect_RestartReplay(t *testing.T) {
 	}
 
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-REPLAY-007",
-		ClaimIDs: []string{"CLM-M5-001"},
-		TestName: "TestEffect_RestartReplay",
-		Inputs: map[string]interface{}{"effect_id": effectID},
+		ID:         "EVD-M5-REPLAY-007",
+		ClaimIDs:   []string{"CLM-M5-001"},
+		TestName:   "TestEffect_RestartReplay",
+		Inputs:     map[string]interface{}{"effect_id": effectID},
 		Assertions: map[string]interface{}{"replay_equal": true},
 	})
 }
