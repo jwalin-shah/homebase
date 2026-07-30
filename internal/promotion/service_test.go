@@ -21,7 +21,31 @@ func contractFixtureRoot() string {
 	if root := os.Getenv("RUNNING_MACHINE_CONTRACTS_ROOT"); root != "" {
 		return root
 	}
+	candidates := []string{
+		defaultContractFixtureRoot,
+		filepath.Join(os.Getenv("HOME"), "Projects", "running-machine-contracts"),
+		filepath.Join(os.Getenv("HOME"), "projects", "running-machine-contracts"),
+		filepath.Join("..", "running-machine-contracts"),
+	}
+	for _, root := range candidates {
+		if root == "" {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(root, "fixtures", "transcript-promotion")); err == nil && st.IsDir() {
+			return root
+		}
+	}
 	return defaultContractFixtureRoot
+}
+
+func requirePromotionFixtures(t *testing.T) string {
+	t.Helper()
+	root := contractFixtureRoot()
+	dir := filepath.Join(root, "fixtures", "transcript-promotion")
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Skipf("running-machine-contracts fixtures unavailable at %s (set RUNNING_MACHINE_CONTRACTS_ROOT)", dir)
+	}
+	return root
 }
 
 func TestPromoteFixtureDurableAndRestart(t *testing.T) {
@@ -88,7 +112,8 @@ func TestPromoteFixtureDurableAndRestart(t *testing.T) {
 }
 
 func TestContractFixturesMatchGoBoundaryAcceptance(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join(contractFixtureRoot(), "fixtures", "transcript-promotion", "*.json"))
+	root := requirePromotionFixtures(t)
+	paths, err := filepath.Glob(filepath.Join(root, "fixtures", "transcript-promotion", "*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +216,8 @@ func TestPromoteRejectsTamperedTranscriptBeforeAuthentication(t *testing.T) {
 
 func loadPromotionFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(contractFixtureRoot(), "fixtures", "transcript-promotion", name))
+	root := requirePromotionFixtures(t)
+	raw, err := os.ReadFile(filepath.Join(root, "fixtures", "transcript-promotion", name))
 	if err != nil {
 		t.Fatal(err)
 	}
