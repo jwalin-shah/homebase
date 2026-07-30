@@ -2,8 +2,8 @@ package effect
 
 import (
 	"context"
-	"sync"
 	"homebase/internal/domain"
+	"sync"
 )
 
 type PlannedOutcome struct {

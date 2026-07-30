@@ -10,12 +10,12 @@ import (
 )
 
 type Evidence struct {
-	ID            string
-	ClaimIDs      []string
-	TestName      string
-	Inputs        map[string]interface{}
-	Assertions    map[string]interface{}
-	Artifacts     map[string]string
+	ID         string
+	ClaimIDs   []string
+	TestName   string
+	Inputs     map[string]interface{}
+	Assertions map[string]interface{}
+	Artifacts  map[string]string
 }
 
 func emitEvidence(t *testing.T, ev Evidence) {
@@ -43,11 +43,11 @@ func emitEvidence(t *testing.T, ev Evidence) {
 	sb.WriteString(fmt.Sprintf("    name: %s\n", ev.TestName))
 	sb.WriteString(fmt.Sprintf("    command: go test -run %s\n", ev.TestName))
 	sb.WriteString("    exit_code: 0\n")
-	
+
 	sb.WriteString("  environment:\n")
 	sb.WriteString("    dafny_version: 4.11.0\n")
 	sb.WriteString("    go_version: 1.22.0\n")
-	
+
 	sb.WriteString("  inputs:\n")
 	for k, v := range ev.Inputs {
 		sb.WriteString(fmt.Sprintf("    %s: %v\n", k, v))

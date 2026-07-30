@@ -14,53 +14,53 @@ import (
 
 func TestProperty_BoundedRecoveryTrace(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
-	
+
 	// Generate 1000 random traces
 	for i := 0; i < 1000; i++ {
 		aid, _ := ParseAttemptID(fmt.Sprintf("trace-%d", i))
-		
+
 		state := AttemptState{ID: aid}
 		var history []Event
-		
+
 		// Each trace consists of a random sequence of 10 to 50 commands
 		numCommands := rand.Intn(40) + 10
-		
+
 		for step := 0; step < numCommands; step++ {
 			// Save a clone of the input state to verify immutability
 			stateClone := cloneState(state)
-			
+
 			cmd := generateRandomCommand(aid)
 			decision := Decide(state, cmd)
-			
+
 			// Invariant 3: Decide never mutates input state
 			if !statesEqual(state, stateClone) {
 				t.Fatalf("Invariant Violation: Decide mutated the input state!")
 			}
-			
+
 			for _, effect := range decision.Effects {
 				// Invariant 1: Recovery ordinals are only 1 or 2
 				if effect.Ordinal > 2 {
 					t.Fatalf("Invariant Violation: Dispatched effect with ordinal %d", effect.Ordinal)
 				}
 			}
-			
+
 			for _, event := range decision.Events {
 				state = Apply(state, event)
 				history = append(history, event)
 			}
-			
+
 			// Invariant 2: No more than 2 unique EffectIDs
 			if len(state.DispatchedEffectIDs) > 2 {
 				t.Fatalf("Invariant Violation: Dispatched %d unique effect IDs (limit 2)", len(state.DispatchedEffectIDs))
 			}
 		}
-		
+
 		// Invariant 4: Replaying emitted events reconstructs identical state
 		replayedState := AttemptState{ID: aid}
 		for _, event := range history {
 			replayedState = Apply(replayedState, event)
 		}
-		
+
 		if !statesEqual(state, replayedState) {
 			t.Fatalf("Invariant Violation: Replayed state does not match final state!")
 		}
@@ -86,6 +86,7 @@ func generateRandomCommand(aid AttemptID) Command {
 type garbageCommand struct {
 	AttemptID AttemptID
 }
+
 func (c garbageCommand) isCommand() {}
 
 func cloneState(s AttemptState) AttemptState {

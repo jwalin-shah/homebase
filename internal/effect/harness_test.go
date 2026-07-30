@@ -90,17 +90,17 @@ func TestEffect_CrashAfterRemoteSuccess(t *testing.T) {
 	fp := getFingerprint("req-1")
 	executor.PushOutcome(effectID, PlannedOutcome{Action: "UnknownAfterApply", Reason: "simulated_timeout"})
 	outcome1, _ := executor.Execute(context.Background(), effectID, idempotencyKey, fp)
-	
+
 	// Stage 3: New worker claims after lease expiry
 	currentTime = leaseUntil + 1
 	state, version = repo.Load(effectID)
-	
+
 	// Must retry it first to move back to pending
 	cmdRetry := domain.CommandRetryEffect{EffectID: effectID}
 	decision = domain.DecideEffect(state, cmdRetry)
 	repo.Append(effectID, version, decision.Events)
 	state, version = repo.Load(effectID)
-	
+
 	cmdClaim2 := domain.CommandClaimEffect{
 		EffectID:        effectID,
 		WorkerID:        "worker-2",
@@ -137,32 +137,32 @@ func TestEffect_CrashAfterRemoteSuccess(t *testing.T) {
 	if finalState.Phase != domain.EffectSucceeded {
 		t.Fatalf("expected EffectSucceeded, got %v", finalState.Phase)
 	}
-	
+
 	op := executor.Applied[idempotencyKey]
 	if op == nil || op.ApplyCount != 1 {
 		t.Fatalf("expected applied once due to idempotency")
 	}
-	
+
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-CRASH-003",
+		ID:       "EVD-M5-CRASH-003",
 		ClaimIDs: []string{"CLM-M5-001", "CLM-M5-002", "CLM-M5-003"},
 		TestName: "TestEffect_CrashAfterRemoteSuccess",
 		Inputs: map[string]interface{}{
-			"effect_id": effectID,
+			"effect_id":     effectID,
 			"failure_point": "after_remote_apply_before_journal_append",
 		},
 		Assertions: map[string]interface{}{
-			"remote_application_count": op.ApplyCount,
-			"execution_attempt_count": op.InvocationCount,
-			"idempotency_key_reused": true,
-			"first_observation": outcome1,
-			"second_observation": outcome2,
-			"first_claim_epoch": 1,
-			"second_claim_epoch": 2,
+			"remote_application_count":          op.ApplyCount,
+			"execution_attempt_count":           op.InvocationCount,
+			"idempotency_key_reused":            true,
+			"first_observation":                 outcome1,
+			"second_observation":                outcome2,
+			"first_claim_epoch":                 1,
+			"second_claim_epoch":                2,
 			"stale_epoch_finalization_rejected": true,
-			"final_effect_state": "Succeeded",
-			"journal_replay_equal": true,
-			"retry_bound_respected": true,
+			"final_effect_state":                "Succeeded",
+			"journal_replay_equal":              true,
+			"retry_bound_respected":             true,
 		},
 	})
 }
@@ -260,17 +260,17 @@ func TestEffect_ExclusiveClaim(t *testing.T) {
 	}
 
 	emitEvidence(t, Evidence{
-		ID: "EVD-M5-CONCURRENCY-001",
+		ID:       "EVD-M5-CONCURRENCY-001",
 		ClaimIDs: []string{"CLM-M5-002"},
 		TestName: "TestEffect_ExclusiveClaim",
 		Inputs: map[string]interface{}{
 			"effect_id": effectID,
-			"workers": 2,
+			"workers":   2,
 		},
 		Assertions: map[string]interface{}{
-			"accepted_count": accepted,
-			"rejected_count": rejected,
-			"final_state": "Claimed",
+			"accepted_count":            accepted,
+			"rejected_count":            rejected,
+			"final_state":               "Claimed",
 			"journal_version_increment": 1,
 		},
 	})

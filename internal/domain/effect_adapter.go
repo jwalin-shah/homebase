@@ -1,8 +1,8 @@
 package domain
 
 import (
-	"homebase/internal/dafny_effect_reducer"
 	"github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
+	"homebase/internal/dafny_effect_reducer"
 )
 
 // EffectPhase defines the lifecycle states of an Effect.
@@ -28,6 +28,7 @@ type CapabilityDescriptor struct {
 }
 
 type IdempotencyCapability uint8
+
 const (
 	IdempotencyNone IdempotencyCapability = iota
 	IdempotencyStableKey
@@ -35,6 +36,7 @@ const (
 )
 
 type ResultLookupCapability uint8
+
 const (
 	ResultLookupNone ResultLookupCapability = iota
 	ResultLookupByExternalReference
@@ -42,6 +44,7 @@ const (
 )
 
 type TransactionCapability uint8
+
 const (
 	TransactionNone TransactionCapability = iota
 	TransactionSingleOperation
@@ -49,6 +52,7 @@ const (
 )
 
 type UnknownOutcomeCapability uint8
+
 const (
 	UnknownRequiresManualResolution UnknownOutcomeCapability = iota
 	UnknownCanReconcile
@@ -56,6 +60,7 @@ const (
 )
 
 type VerificationStatus uint8
+
 const (
 	StatusProposed VerificationStatus = iota
 	StatusVerified
@@ -165,6 +170,7 @@ type CommandClaimEffect struct {
 	LeaseUntil      int
 	CurrentTime     int
 }
+
 func (CommandClaimEffect) isEffectCommand() {}
 
 type CommandObserveEffect struct {
@@ -173,17 +179,20 @@ type CommandObserveEffect struct {
 	ClaimEpoch int
 	Outcome    EffectOutcome
 }
+
 func (CommandObserveEffect) isEffectCommand() {}
 
 type CommandRetryEffect struct {
 	EffectID EffectID
 }
+
 func (CommandRetryEffect) isEffectCommand() {}
 
 type CommandResolveUnknown struct {
 	EffectID     EffectID
 	Capabilities CapabilityDescriptor
 }
+
 func (CommandResolveUnknown) isEffectCommand() {}
 
 func toDafnyEffectCommand(cmd EffectCommand) dafny_effect_reducer.Command {
@@ -299,6 +308,7 @@ type EventEffectClaimed struct {
 	ClaimEpoch int
 	LeaseUntil int
 }
+
 func (EventEffectClaimed) isEffectEvent() {}
 
 type EventEffectObserved struct {
@@ -306,41 +316,46 @@ type EventEffectObserved struct {
 	ClaimEpoch int
 	Outcome    EffectOutcome
 }
+
 func (EventEffectObserved) isEffectEvent() {}
 
 type EventEffectRetried struct {
 	EffectID EffectID
 }
+
 func (EventEffectRetried) isEffectEvent() {}
 
 type EventEffectTerminalized struct {
 	EffectID EffectID
 	Reason   string
 }
-func (EventEffectTerminalized) isEffectEvent() {}
 
+func (EventEffectTerminalized) isEffectEvent() {}
 
 type EventManualResolutionRequired struct {
 	EffectID EffectID
 }
+
 func (EventManualResolutionRequired) isEffectEvent() {}
 
 type EventReconciliationRequired struct {
 	EffectID EffectID
 }
+
 func (EventReconciliationRequired) isEffectEvent() {}
 
 type EventRetryAuthorized struct {
 	EffectID EffectID
 }
+
 func (EventRetryAuthorized) isEffectEvent() {}
 
 type EventEffectRejected struct {
 	EffectID EffectID
 	Reason   string
 }
-func (EventEffectRejected) isEffectEvent() {}
 
+func (EventEffectRejected) isEffectEvent() {}
 
 func fromDafnyEffectEvent(dafnyEvent dafny_effect_reducer.Event) EffectEvent {
 	if dafnyEvent.Is_EventEffectClaimed() {

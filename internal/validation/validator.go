@@ -26,8 +26,6 @@ func NewValidator(cacheClient *cache.Client, ledgerStore *ledger.Store) *Validat
 	}
 }
 
-
-
 // VerifyAxiomsExist checks if all cited axioms exist in Neo4j.
 // This physically implements the AxiomFirewall interface for the S0: PLAN state.
 func (v *Validator) VerifyAxiomsExist(ctx context.Context, axioms []types.AxiomID) error {
@@ -52,8 +50,6 @@ func (v *Validator) VerifyAxiomsExist(ctx context.Context, axioms []types.AxiomI
 
 	return nil
 }
-
-
 
 // QueryDecisionsByAxiom retrieves all decisions citing a specific axiom from Neo4j
 func (v *Validator) QueryDecisionsByAxiom(axiom string) ([]map[string]interface{}, error) {
@@ -127,8 +123,6 @@ func (v *Validator) CreateIndices() error {
 
 	return v.cache.CreateIndices(ctx)
 }
-
-
 
 // CheckNeo4jHealth checks if Neo4j is available and healthy
 func (v *Validator) CheckNeo4jHealth(ctx context.Context) error {

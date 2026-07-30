@@ -122,8 +122,8 @@ func NewDSSEEnvelope(base64Payload string, decoded AssuranceCase, sig DSSESignat
 	}
 }
 
-func (e DSSEEnvelope) PayloadType() string         { return e.payloadType }
-func (e DSSEEnvelope) Payload() string             { return e.payload }
+func (e DSSEEnvelope) PayloadType() string           { return e.payloadType }
+func (e DSSEEnvelope) Payload() string               { return e.payload }
 func (e DSSEEnvelope) DecodedPayload() AssuranceCase { return e.decodedPayload }
 func (e DSSEEnvelope) Signatures() []DSSESignature {
 	cp := make([]DSSESignature, len(e.signatures))
