@@ -1,221 +1,103 @@
-# HomeBase: Immutable Decision Ledger
+# HomeBase: Contract/Grant Admission and Durable Signed Receipt Authority
 
-**Status:** Phase 0 Design Complete, Ready for Phase 1
-
----
-
-## Essential Files (Read These)
-
-### 1. **SYSTEM-DESIGN.md** (Start Here)
-**Location:** `/homebase/SYSTEM-DESIGN.md`  
-**Size:** ~400 lines  
-**Time to read:** 20 minutes  
-**What it is:** Formal specification—the entire system in one document
-
-**Contains:**
-- Why graphs, not loops
-- Three architectural commitments
-- State machine (5 states + transitions)
-- 6 provable invariants (I1-I6)
-- Type system design
-- Success criteria (testable)
-
-**Use this to:** Understand what HomeBase does and how it works
+**Status:** Implemented — local HTTP service on 127.0.0.1:9102
 
 ---
 
-### 2. **AGENTS.md** (Implementation Blueprint)
-**Location:** `/homebase/AGENTS.md`  
-**Size:** ~250 lines  
-**Time to read:** 15 minutes  
-**What it is:** How to implement SYSTEM-DESIGN.md
+## What it does
 
-**Contains:**
-- Recap of graph structure (5 states)
-- 5-phase workflow (Phase 0-5)
-- 4 parallel tickets (202-205)
-- What each ticket builds
-- File structure (where code goes)
-- Commands (build, test, CI)
+HomeBase is the **authority ledger** of the machine. It records the irreversible
+decisions that authorize work and the signed receipts that prove it happened.
+It is *not* an agent runner, supervisor, or terminal — it is the durable,
+cryptographically-signed record of authority.
 
-**Use this to:** Build code that matches SYSTEM-DESIGN.md
+Implemented components:
 
----
+- **Append-only JSONL ledger** (`homebase_ledger.jsonl`) — every record is
+  appended and fsynced; existing records are never mutated.
+- **Binary typed-record journal** (`HOMEBASE_RECORD_JOURNAL`) — typed records
+  (Contract, CapabilityGrant, Claim, Proof, VerificationReceipt, decision)
+  are replayed into an in-memory store on startup.
+- **Neo4j validation (Axiom Firewall)** — optional; when `NEO4J_URI` is set,
+  records are validated against the Neo4j axiom corpus. Local-only builds run
+  without it (the validator degrades gracefully when the cache client is nil).
+- **Contract/Grant endpoints** — owner-signed admission of a captain-approved
+  Specification + Contract + scoped CapabilityGrant as one journal commit.
+- **Bridge verification receipt endpoints** — Bridge-signed transport receipts
+  that HomeBase derives into Claim/Proof/VerificationReceipt records and
+  commits atomically against the pre-existing Contract and CapabilityGrant.
+- **Configured authority keys** — captain, Bridge transport, admission
+  response, verifier, and receipt keys loaded from `~/.local/state/homebase/keys/`.
 
-### 3. **CLAUDE.md** (Project Principles)
-**Location:** `/homebase/CLAUDE.md`  
-**Size:** ~300 lines  
-**Time to read:** 15 minutes  
-**What it is:** How to think about HomeBase problems
+## Endpoints (mounted routes)
 
-**Contains:**
-- 5 principles specific to graph design
-- Code review checklist (enforce graph structure)
-- Common mistakes to avoid
-- Alignment with global CLAUDE.md
+All routes are `POST` and bind to `127.0.0.1` only. Verified in
+`cmd/homebase/main.go`:
 
-**Use this to:** Write code that doesn't drift back to loops
+| Route | Handler | Purpose |
+|---|---|---|
+| `/api/v1/records` | `HandleAppendExternalRecord` | Public ingress for Trajectory and other untrusted producers; validates the envelope, verifies the payload hash, fsyncs before returning success |
+| `/api/v1/promotions/transcript` | `HandlePromoteTranscript` | Admission of a transcript-derived decision through the authenticated promotion service; evidence, decision, and signed receipt committed together |
+| `/api/v1/contracts/grants` | `HandleAppendContractGrant` | Owner-signed admission of Specification + Contract + scoped CapabilityGrant as one journal commit |
+| `/api/v1/contracts/grants/check` | `HandleCheckContractGrant` | Read-only Bridge admission check: proves an approved Contract + active CapabilityGrant exist with exact scope match, freshness, and expiry; Bridge cannot mint or extend authority |
+| `/api/v1/verifications/bridge` | `HandleAppendBridgeVerification` | Accepts a Bridge-signed transport receipt; derives Claim/Proof/VerificationReceipt records, checks them against the pre-existing Contract and CapabilityGrant, commits atomically |
 
----
+The legacy decision endpoint is intentionally **not** mounted — it accepted
+caller-controlled decisions signed with a process-local key, which is not an
+authenticated authority boundary.
 
-### 4. **PHASE-ENFORCEMENT-FRAMEWORK.md** (Process)
-**Location:** `/homebase/tickets/PHASE-ENFORCEMENT-FRAMEWORK.md`  
-**Size:** ~200 lines  
-**Time to read:** 10 minutes  
-**What it is:** How to prevent partial work (the "no skip steps" rule)
+## Key ownership
 
-**Contains:**
-- 5 roles (Discovery Lead, Architect, Implementation, Tester, Auditor)
-- Phase sign-off sheet template
-- 3 enforcement layers (rule + checklist + harness)
-- Quality metrics (track over time)
+Keys live in `~/.local/state/homebase/keys/` (mode `0600`; the server refuses
+group/world-readable key files):
 
-**Use this to:** Ensure every phase is complete before moving forward
+| File | Role |
+|---|---|
+| `captain.pub` | Owner (captain) public key — authenticates contract/transcript promotion |
+| `bridge.pub` | Bridge transport public key — authenticates Bridge admission checks and verification receipts |
+| `admission.priv` | HomeBase admission response signing key — signs the response to Bridge's read-only authority check |
+| `verifier.pub` | Verifier public key (with `HOMEBASE_VERIFIER_KEY_ID`) — authenticates verifier-owned receipts |
+| `receipt.priv` | Receipt signing key — signs promotion receipts |
 
----
+Environment variables (`HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE`,
+`HOMEBASE_BRIDGE_PUBLIC_KEY_FILE`, `HOMEBASE_ADMISSION_PRIVATE_KEY_FILE`,
+`HOMEBASE_VERIFIER_PUBLIC_KEY_FILE`, `HOMEBASE_VERIFIER_KEY_ID`,
+`HOMEBASE_RECEIPT_PRIVATE_KEY_FILE`) point at these files. Keys are provisioned
+once (see `dotfiles/bin/provision-authority-keys.sh`) and persisted; they are
+never generated per-launch.
 
-## Optional Files (Reference Only)
+## How Bridge integrates
 
-### Deep Dives (Only Read If Implementing That Piece)
+Bridge is the caller of the authority chain:
 
-| File | Location | Size | When to Read |
-|------|----------|------|--------------|
-| COMMON-BUGS-CATALOG.md | tickets/ | 400 lines | When writing Phase 1 code (phase gate checks) |
-| GROUNDED-REASONING-EVIDENCE.md | tickets/ | 200 lines | When collecting evidence (Phase 2-4) |
-| ENFORCEMENT-HARNESS-LOCAL.md | tickets/ | 250 lines | When setting up git hooks |
-| PHASE-0-CHECKLIST-SPECIFICATION.md | tickets/ | 150 lines | Phase 0 sign-off (what to verify) |
-| PHASE-1-CHECKLIST-IMPLEMENTATION.md | tickets/ | 200 lines | Phase 1 code review (what to check) |
-| PHASE-4-CHECKLIST-INDEPENDENT-AUDIT.md | tickets/ | 350 lines | Phase 4 audit (stress tests) |
+- `BRIDGE_HOMEBASE_URL=http://127.0.0.1:9102` — HomeBase's HTTP address.
+- Bridge signs contract/grant checks with **its private key**
+  (`~/.local/state/homebase/keys/bridge.priv`); HomeBase verifies with
+  `bridge.pub`.
+- HomeBase signs admission responses with `admission.priv`; Bridge verifies
+  with `admission.pub`.
+- Bridge submits verification receipts to `/api/v1/verifications/bridge`;
+  HomeBase commits them against the pre-existing Contract and CapabilityGrant.
 
----
+The flow: captain approves a Contract → HomeBase records it →
+Bridge checks the grant before creating a worktree → Bridge verifies the
+worker result → HomeBase commits the verification receipt → authorized
+delivery.
 
-## Files to DELETE (Old Work, Not Needed)
+## Research (not implemented)
 
-These were from earlier iterations and are now superseded:
+The following is **design/speculation — not the live behavior of this server**.
+It is preserved for reference only.
 
-```
-/homebase/PHASE-2-PLAN.md                      ← DELETE (obsolete)
-/homebase/SYSTEM-AUDIT.md                      ← DELETE (obsolete)
-/homebase/TICKET-202-PHASE-*.md (all 5 files)  ← DELETE (superseded by tickets/TICKET-202-PHASE-*.md)
-/homebase/tickets/TICKET-202-BRIDGE-SPECIFICATION-PHASE-0.md  ← DELETE
-/homebase/tickets/TICKET-203-AXIOMS-PHASE-0.md  ← DELETE
-/homebase/tickets/TICKET-204-INTEGRATION-TESTING-PHASE-0.md  ← DELETE
-/homebase/tickets/TICKET-205-OBSERVABILITY-PHASE-0.md  ← DELETE
-/homebase/tickets/TICKET-203-PHASE-1-AXIOM-QUERYING.md  ← DELETE
-/homebase/tickets/TICKET-204-PHASE-1-TEST-ISOLATION-FIX.md  ← DELETE
-/homebase/tickets/TICKET-205-PHASE-1-STRUCTURED-LOGGING.md  ← DELETE
-```
+- **`SYSTEM-DESIGN.md`** — the formal graph-structured system design
+  (graph states, 5-state transitions, 6 provable invariants I1–I6, TLA-style
+  model checking). Status: **design, not implemented**.
+- **`AGENTS.md` / `CLAUDE.md` / `tickets/PHASE-ENFORCEMENT-FRAMEWORK.md`** —
+  the implementation blueprint and phase-gate process documents.
+- **Dafny/formal-assurance work** under `verification/` — assurance-case
+  scaffolding, not part of the running service.
+- **Older planning docs** (`PHASE-2-PLAN.md`, `SYSTEM-AUDIT.md`,
+  `TICKET-202-*.md` at the repo root) — superseded, slated for deletion.
 
----
-
-## Quick Reference: What to Do Now
-
-### If you're the Captain:
-1. Read **SYSTEM-DESIGN.md** (20 min)
-2. Read **AGENTS.md** (15 min)
-3. Decide: Approve design, or request changes?
-4. If approved: Phase 1 implementation starts
-
-### If you're implementing (Phase 1):
-1. Read **SYSTEM-DESIGN.md** (understand the graph)
-2. Read **AGENTS.md** (understand your ticket's states)
-3. Read **CLAUDE.md** (understand the principles)
-4. Read **PHASE-1-CHECKLIST-IMPLEMENTATION.md** (before committing code)
-5. Code your ticket (one of 202-205)
-
-### If you're testing (Phase 2-3):
-1. Read **SYSTEM-DESIGN.md** (what to verify)
-2. Read **AGENTS.md** (the 5 states you're testing)
-3. Read **COMMON-BUGS-CATALOG.md** (what can go wrong)
-4. Write tests that verify the state machine works
-
-### If you're auditing (Phase 4):
-1. Read **SYSTEM-DESIGN.md** (formal spec)
-2. Read **PHASE-4-CHECKLIST-INDEPENDENT-AUDIT.md** (what to stress-test)
-3. Verify 6 invariants hold
-4. Document findings in **AUDIT-FINDINGS-[TICKET]-PHASE-4.md**
-
----
-
-## File Organization (Where Everything Lives)
-
-```
-/homebase/
-├── README.md                          ← You are here
-├── SYSTEM-DESIGN.md                   ← Formal spec (START)
-├── AGENTS.md                          ← Implementation (START)
-├── CLAUDE.md                          ← Principles (START)
-│
-├── cmd/homebase/
-│   └── main.go                        ← Code entry point
-│
-├── internal/                          ← Implementation (per ticket)
-│   ├── graph/                         ← NEW: States (PLAN, EXECUTE, etc.)
-│   ├── ledger/                        ← JSONL store
-│   ├── signing/                       ← Ed25519 (I4, I5)
-│   ├── cache/                         ← Neo4j (I6)
-│   └── validation/
-│
-├── scripts/
-│   ├── setup-hooks.sh                 ← Install git hooks (Phase 1)
-│   ├── collect-phase-evidence.sh      ← Collect evidence (each phase)
-│   └── common-bugs-check.sh           ← Scan for known patterns
-│
-├── .githooks/
-│   ├── pre-commit                     ← Catch bugs before commit
-│   ├── commit-msg                     ← Validate ticket reference
-│   └── phase-gate-local               ← Check phase progression
-│
-└── tickets/
-    ├── PHASE-ENFORCEMENT-FRAMEWORK.md ← Process (how to enforce)
-    │
-    ├── PHASE-0-CHECKLIST-SPECIFICATION.md
-    ├── PHASE-1-CHECKLIST-IMPLEMENTATION.md
-    ├── PHASE-4-CHECKLIST-INDEPENDENT-AUDIT.md
-    │
-    ├── COMMON-BUGS-CATALOG.md         ← 11 bug categories + tests
-    ├── GROUNDED-REASONING-EVIDENCE.md ← How to prove work
-    ├── ENFORCEMENT-HARNESS-LOCAL.md   ← Git hooks explained
-    │
-    └── TICKET-[202-205]-PHASE-*.md    ← Work in progress (per ticket)
-```
-
----
-
-## Total Reading Time (Essential Only)
-
-- **SYSTEM-DESIGN.md:** 20 min
-- **AGENTS.md:** 15 min
-- **CLAUDE.md:** 15 min
-- **PHASE-ENFORCEMENT-FRAMEWORK.md:** 10 min
-
-**Total: ~60 minutes to understand entire system.**
-
-Optional reading (deeper dives): +2-3 hours if you need to implement specific pieces.
-
----
-
-## Current Status
-
-| Item | Status |
-|------|--------|
-| **Phase 0 Design** | ✓ COMPLETE |
-| **System Design Formal Spec** | ✓ SYSTEM-DESIGN.md (locked) |
-| **Implementation Blueprint** | ✓ AGENTS.md (ready) |
-| **Project Principles** | ✓ CLAUDE.md (ready) |
-| **Enforcement Rules** | ✓ PHASE-ENFORCEMENT-FRAMEWORK.md (ready) |
-| **Phase 1 (Implementation)** | ⏳ PAUSED (waiting for captain approval) |
-| **Phase 2-5** | ⏳ BLOCKED (depends on Phase 1) |
-
----
-
-## Next Step
-
-**Captain:** Approve SYSTEM-DESIGN.md? Yes / No / Needs Changes?
-
-If yes → Phase 1 implementation starts (Tickets 202-205 parallel)
-If no → What needs to change?
-
----
-
-**That's it. Everything else is just details.**
+The live service is the HTTP API described above. Any gap between the design
+documents and the running code: **the code is the truth**.
