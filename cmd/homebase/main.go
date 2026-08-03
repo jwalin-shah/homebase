@@ -55,18 +55,29 @@ func main() {
 	}
 	signer := signing.NewSigner(privKey)
 
-	// 2.5 Initialize the Neo4j Ontology (The Firewall)
-	// This physically enforces Coyle's "Ontology at the Ledger" rule.
-	neo4jPassword := strings.TrimSpace(os.Getenv("NEO4J_PASSWORD"))
-	if neo4jPassword == "" {
-		log.Fatal("FATAL: NEO4J_PASSWORD is required; refusing to disable the Axiom Firewall")
-	}
-	neo4jClient, err := cache.NewClient("bolt://localhost:7687", "neo4j", neo4jPassword)
-	if err != nil {
-		log.Fatalf("FATAL: Neo4j/Axiom Firewall unavailable: %v", err)
+	// 2.5 Initialize the Neo4j Ontology (The Firewall), OPTIONALLY.
+	// Local-only builds may run without Neo4j: the validator degrades gracefully
+	// when its cache client is nil, so the Axiom Firewall is simply skipped.
+	// Set NEO4J_URI to enable the firewall; otherwise it is disabled with a
+	// WARNING. This keeps local-only operation free of a mandatory Neo4j
+	// password while preserving the firewall for deployments that do set it.
+	neo4jURI := strings.TrimSpace(os.Getenv("NEO4J_URI"))
+	var neo4jClient *cache.Client
+	if neo4jURI != "" {
+		neo4jPassword := strings.TrimSpace(os.Getenv("NEO4J_PASSWORD"))
+		if neo4jPassword == "" {
+			log.Fatal("FATAL: NEO4J_URI is set but NEO4J_PASSWORD is required; refusing to disable the Axiom Firewall")
+		}
+		var err error
+		neo4jClient, err = cache.NewClient(neo4jURI, "neo4j", neo4jPassword)
+		if err != nil {
+			log.Fatalf("FATAL: Neo4j/Axiom Firewall unavailable: %v", err)
+		}
+	} else {
+		fmt.Println("WARNING: NEO4J_URI not set; running WITHOUT the Axiom Firewall (local-only mode)")
 	}
 
-	// 3. Initialize the Axiom Firewall Validator
+	// 3. Initialize the Axiom Firewall Validator (nil cache = firewall disabled)
 	validator := validation.NewValidator(neo4jClient, store)
 
 	// 4. Initialize the authenticated transcript promotion path only when its
