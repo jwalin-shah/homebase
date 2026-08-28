@@ -4,23 +4,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"homebase/internal/journal"
 )
 
 func TestContractGrantCommitIsAtomicIdempotentAndRebuildable(t *testing.T) {
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validApprovalDecision(t)); err != nil {
-		t.Fatalf("append approval decision: %v", err)
-	}
+	store, j, path := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
 	specification := validSpecification(t)
 	contract := validContract(t, "contract-1")
 	grant := validGrant(t, "grant-1", "contract-1", "idem-1")
@@ -85,18 +72,8 @@ func TestLegacyContractGrantCommitFailsClosedWithMigrationDiagnostic(t *testing.
 }
 
 func TestContractGrantCommitRejectsMissingContractLineageAtomically(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validApprovalDecision(t)); err != nil {
-		t.Fatalf("append approval decision: %v", err)
-	}
 	grant := validGrant(t, "grant-1", "missing-contract", "idem-1")
 	if _, err := store.AppendContractAndGrant(validSpecification(t), validContract(t, "contract-1"), grant); err == nil {
 		t.Fatal("contract/grant commit accepted mismatched grant lineage")
@@ -107,18 +84,8 @@ func TestContractGrantCommitRejectsMissingContractLineageAtomically(t *testing.T
 }
 
 func TestContractGrantCommitRejectsUnapprovedSpecification(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
 	specification := decodeObject(t, validSpecification(t))
 	specification["status"] = "proposed"
 	specification["authority_class"] = AuthorityAgentProposal
@@ -136,18 +103,8 @@ func TestContractGrantCommitRejectsUnapprovedSpecification(t *testing.T) {
 }
 
 func TestContractGrantCommitRejectsMismatchedSpecificationDigest(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
 	specification := validSpecification(t)
 	contractRaw, grantRaw := bindSpecification(t, specification)
 	contract := decodeObject(t, contractRaw)
@@ -173,19 +130,6 @@ func TestContractGrantCommitRejectsMismatchedSpecificationDigest(t *testing.T) {
 }
 
 func TestApprovedSpecificationMustMatchDecisionIdentityAndDigest(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
-
 	for name, mutate := range map[string]func(map[string]any){
 		"different_id": func(spec map[string]any) {
 			spec["id"] = "spec:homebase:other:v1"
@@ -195,16 +139,20 @@ func TestApprovedSpecificationMustMatchDecisionIdentityAndDigest(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			store, j, _ := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
+			defer j.Close()
 			specification := decodeObject(t, validSpecification(t))
 			mutate(specification)
 			specification["content_hash"] = payloadHash(t, specification["payload"])
-			if _, err := store.Append(mustJSON(t, specification)); !errors.Is(err, ErrInvalidRecord) {
+			specificationRaw := mustJSON(t, specification)
+			contractRaw, grantRaw := bindSpecification(t, specificationRaw)
+			if _, err := store.AppendContractAndGrant(specificationRaw, contractRaw, grantRaw); !errors.Is(err, ErrInvalidRecord) {
 				t.Fatalf("mismatched approved specification error = %v, want ErrInvalidRecord", err)
 			}
+			if got := len(store.List()); got != 1 {
+				t.Fatalf("mismatched approved specification changed store beyond decision: %d", got)
+			}
 		})
-	}
-	if got := len(store.List()); got != 1 {
-		t.Fatalf("mismatched approved specifications changed store beyond decision: %d", got)
 	}
 }
 
