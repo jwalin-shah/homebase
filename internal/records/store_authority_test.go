@@ -84,7 +84,7 @@ func TestAuthorizedContractGrantPreservesSuccessIdempotencyAndReplay(t *testing.
 	}
 	specification := validSpecification(t)
 	contract := validContract(t, "contract-authorized")
-	grant := validGrant(t, "grant-authorized", "contract-authorized", "idem-authorized")
+	grant := validGrant(t, "grant-authorized", "contract-authorized", "idem-1")
 	first, err := store.AppendContractAndGrantAuthorized(authorities.ContractGrant, specification, contract, grant)
 	if err != nil {
 		t.Fatalf("authorized contract/grant commit: %v", err)
