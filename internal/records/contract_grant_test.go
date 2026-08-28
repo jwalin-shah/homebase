@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"homebase/internal/journal"
 )
 
 func TestContractGrantCommitIsAtomicIdempotentAndRebuildable(t *testing.T) {
