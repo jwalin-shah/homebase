@@ -61,11 +61,11 @@ func TestPromoteFixtureDurableAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := records.NewStore(j)
+	store, authorities, err := records.NewStoreWithAuthorities(j)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(store, fixtureVerifier(raw, public), private, now)
+	service, err := NewServiceWithAuthority(store, authorities.Promotion, fixtureVerifier(raw, public), private, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +97,11 @@ func TestPromoteFixtureDurableAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j2.Close()
-	reopenedStore, err := records.NewStore(j2)
+	reopenedStore, reopenedAuthorities, err := records.NewStoreWithAuthorities(j2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewService(reopenedStore, fixtureVerifier(raw, public), private, now)
+	reopened, err := NewServiceWithAuthority(reopenedStore, reopenedAuthorities.Promotion, fixtureVerifier(raw, public), private, now)
 	if err != nil {
 		t.Fatalf("rebuild promotion service: %v", err)
 	}
