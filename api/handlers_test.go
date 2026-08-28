@@ -160,13 +160,13 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordStore, recordJournal := newAPIStoreWithHistoricalRecords(t, bridgeApprovalDecision(t))
+	recordStore, recordJournal, storeAuthorities := newAPIStoreWithHistoricalRecordsAndAuthorities(t, bridgeApprovalDecision(t))
 	defer recordJournal.Close()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	server := NewServerWithContractGrantAuthority(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil, storeAuthorities.ContractGrant)
 	bundle := mustJSON(t, map[string]any{
 		"specification": json.RawMessage(bridgeSpecification(t)),
 		"contract":      json.RawMessage(bridgeContract(t, "contract-1")),
