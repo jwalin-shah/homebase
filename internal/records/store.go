@@ -222,6 +222,9 @@ func (s *Store) Append(raw []byte) (AppendResult, error) {
 	if err != nil {
 		return AppendResult{}, err
 	}
+	if record.AuthorityClass != AuthorityUntrustedText && record.AuthorityClass != AuthorityWorkerObservation && record.AuthorityClass != AuthorityAgentProposal {
+		return AppendResult{}, fmt.Errorf("%w: %s/%s", ErrAuthorityRequired, record.Kind, record.AuthorityClass)
+	}
 	return s.appendValidated(record, canonical)
 }
 
