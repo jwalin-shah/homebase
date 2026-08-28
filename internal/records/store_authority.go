@@ -11,6 +11,7 @@ type storeAuthorityDomain uint8
 const (
 	promotionAuthorityDomain storeAuthorityDomain = iota + 1
 	contractGrantAuthorityDomain
+	verifierPolicyAuthorityDomain
 )
 
 // StoreAuthority is an opaque, Store-bound capability for one specialized
@@ -28,6 +29,7 @@ type StoreAuthority struct {
 type StoreAuthorities struct {
 	Promotion     StoreAuthority
 	ContractGrant StoreAuthority
+	VerifierPolicy StoreAuthority
 }
 
 // NewStoreWithAuthorities constructs a Store and its non-forgeable in-process
@@ -53,8 +55,9 @@ func NewStoreWithClockAndAuthorities(j *journal.BinaryJournal, clock func() time
 
 func authoritiesFor(store *Store) StoreAuthorities {
 	return StoreAuthorities{
-		Promotion:     StoreAuthority{store: store, domain: promotionAuthorityDomain},
-		ContractGrant: StoreAuthority{store: store, domain: contractGrantAuthorityDomain},
+		Promotion:      StoreAuthority{store: store, domain: promotionAuthorityDomain},
+		ContractGrant:  StoreAuthority{store: store, domain: contractGrantAuthorityDomain},
+		VerifierPolicy: StoreAuthority{store: store, domain: verifierPolicyAuthorityDomain},
 	}
 }
 
