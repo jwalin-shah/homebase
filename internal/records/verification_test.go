@@ -142,22 +142,12 @@ func TestProductionBridgeReceiptRejectsMissingAndUnknownVerifierAuthority(t *tes
 }
 
 func TestProductionBridgeReceiptRetainsAttestationAcrossReplay(t *testing.T) {
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validBridgeContract(t, "contract-1", productionVerifierID)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
-		t.Fatal(err)
-	}
+	store, j, path := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validBridgeContract(t, "contract-1", productionVerifierID),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+	)
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -256,23 +246,13 @@ func TestBridgeReceiptRejectsWorkerAsVerifier(t *testing.T) {
 }
 
 func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validBridgeContract(t, "contract-1", legacyVerifierID),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+	)
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
-		t.Fatal(err)
-	}
 	result, err := store.AppendBridgeVerificationSubmission(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789"))
 	if err != nil {
 		t.Fatalf("append provenance receipt: %v", err)
@@ -298,22 +278,12 @@ func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
 }
 
 func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing.T) {
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
-		t.Fatal(err)
-	}
+	store, j, path := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validBridgeContract(t, "contract-1", legacyVerifierID),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+	)
 
 	raw := bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789")
 	first, err := store.AppendBridgeVerificationSubmission(raw)
@@ -358,30 +328,20 @@ func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing
 }
 
 func TestBridgeVerificationRejectsExpiredAuthorityAtSubmission(t *testing.T) {
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
 	clock := func() time.Time { return time.Date(2026, 7, 28, 14, 0, 0, 0, time.UTC) }
-	store, err := NewStoreWithClock(j, clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
-		t.Fatal(err)
-	}
 	expiredGrant := decodeObject(t, validGrant(t, "grant-1", "contract-1", "idem-1"))
 	grantPayload := expiredGrant["payload"].(map[string]any)
 	grantPayload["expires_at"] = "2026-07-28T13:00:00Z"
 	expiredGrant["content_hash"] = payloadHashBridge(t, grantPayload)
 	grantFreshness := expiredGrant["freshness"].(map[string]any)
 	grantFreshness["valid_until"] = "2026-07-28T13:00:00Z"
-	if _, err := store.Append(mustJSONBridge(t, expiredGrant)); err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecordsAndClock(t, clock,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validBridgeContract(t, "contract-1", legacyVerifierID),
+		mustJSONBridge(t, expiredGrant),
+	)
+	defer j.Close()
 	if _, err := store.AppendBridgeVerificationSubmission(bridgeSubmission(t, "contract-1", "grant-1", "0123456789012345678901234567890123456789")); err == nil {
 		t.Fatal("expired authority was accepted at submission")
 	}
