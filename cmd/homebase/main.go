@@ -41,7 +41,7 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize typed record journal: %v", err)
 	}
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
+	recordStore, _, err := records.NewStoreWithAuthorities(recordJournal)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to replay typed record journal: %v", err)
 	}
