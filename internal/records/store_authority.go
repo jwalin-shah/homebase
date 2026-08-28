@@ -65,24 +65,22 @@ func (s *Store) requireStoreAuthority(authority StoreAuthority, domain storeAuth
 	return nil
 }
 
-// AppendPromotionCommitAuthorized is the capability-gated migration seam for
-// promotion commits. It validates authority before parsing or journal mutation.
-// TASK-021 A0b is not complete until callers are migrated and the legacy
-// ungated method is removed or made inaccessible.
+// AppendPromotionCommitAuthorized is the capability-gated promotion commit
+// boundary. Authority is checked before any payload parsing or journal
+// mutation; the underlying implementation is intentionally package-private.
 func (s *Store) AppendPromotionCommitAuthorized(authority StoreAuthority, decisionRaw, evidenceRaw, receiptRaw []byte) (PromotionCommitResult, error) {
 	if err := s.requireStoreAuthority(authority, promotionAuthorityDomain); err != nil {
 		return PromotionCommitResult{}, err
 	}
-	return s.AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw)
+	return s.appendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw)
 }
 
-// AppendContractAndGrantAuthorized is the capability-gated migration seam for
-// Contract/Grant commits. It validates authority before parsing or journal
-// mutation. TASK-021 A0b is not complete until callers are migrated and the
-// legacy ungated method is removed or made inaccessible.
+// AppendContractAndGrantAuthorized is the capability-gated Contract/Grant
+// commit boundary. Authority is checked before any payload parsing or journal
+// mutation; the underlying implementation is intentionally package-private.
 func (s *Store) AppendContractAndGrantAuthorized(authority StoreAuthority, specificationRaw, contractRaw, grantRaw []byte) (ContractGrantCommitResult, error) {
 	if err := s.requireStoreAuthority(authority, contractGrantAuthorityDomain); err != nil {
 		return ContractGrantCommitResult{}, err
 	}
-	return s.AppendContractAndGrant(specificationRaw, contractRaw, grantRaw)
+	return s.appendContractAndGrant(specificationRaw, contractRaw, grantRaw)
 }
