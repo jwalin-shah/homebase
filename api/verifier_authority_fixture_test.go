@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"homebase/internal/journal"
@@ -103,14 +102,9 @@ func productionBridgeReceiptForAPI(t *testing.T, private ed25519.PrivateKey, key
 	document["content_hash"] = contentHash
 	message := []byte("running-machine-verifier-attestation:v1:" + document["id"].(string) + ":" + contentHash + "\x00" + document["worker_statement"].(string))
 	document["attestation"] = map[string]any{
-		"scheme":    "ed25519-v1",
+		"scheme":    "ed25519-content-hash-v1",
 		"key_id":    keyID,
 		"signature": hex.EncodeToString(ed25519.Sign(private, message)),
 	}
 	return mustJSON(t, document)
-}
-
-func sha256Hex(raw []byte) string {
-	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:])
 }
