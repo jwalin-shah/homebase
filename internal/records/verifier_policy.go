@@ -24,6 +24,14 @@ type VerifierPolicy struct {
 	authorities []VerifierAuthority
 }
 
+// StoreVerifierAuthority is an opaque, Store-bound verifier capability. The
+// policy is bound only by a privileged StoreAuthority minted with the Store;
+// mutation callers cannot supply or replace verifier trust per write.
+type StoreVerifierAuthority struct {
+	store  *Store
+	policy *VerifierPolicy
+}
+
 func NewVerifierPolicy(authorities []VerifierAuthority) (*VerifierPolicy, error) {
 	if len(authorities) == 0 {
 		return nil, fmt.Errorf("%w: verifier policy requires at least one authority", ErrAuthorityRequired)
@@ -57,6 +65,20 @@ func NewVerifierPolicy(authorities []VerifierAuthority) (*VerifierPolicy, error)
 		copied = append(copied, authority)
 	}
 	return &VerifierPolicy{authorities: copied}, nil
+}
+
+// BindStoreVerifierPolicy converts the Store's privileged verifier-policy
+// authority into an opaque capability containing one immutable policy. Only a
+// capability minted with the target Store can bind that Store's live verifier
+// trust; a caller holding only *Store cannot self-enroll a key.
+func BindStoreVerifierPolicy(authority StoreAuthority, policy *VerifierPolicy) (StoreVerifierAuthority, error) {
+	if authority.store == nil || authority.domain != verifierPolicyAuthorityDomain {
+		return StoreVerifierAuthority{}, fmt.Errorf("%w: verifier policy Store authority", ErrAuthorityRequired)
+	}
+	if policy == nil {
+		return StoreVerifierAuthority{}, fmt.Errorf("%w: enrolled verifier policy", ErrAuthorityRequired)
+	}
+	return StoreVerifierAuthority{store: authority.store, policy: policy}, nil
 }
 
 func (p *VerifierPolicy) verify(raw []byte, admissionTime time.Time) error {
@@ -105,18 +127,32 @@ func VerifyBridgeReceiptWithPolicy(raw []byte, policy *VerifierPolicy, admission
 	return policy.verify(raw, admissionTime)
 }
 
+// Verify checks a receipt against the immutable policy bound to this opaque
+// Store verifier capability. It is useful for an API preflight that must use
+// exactly the same trust policy as the durable Store admission boundary.
+func (authority StoreVerifierAuthority) Verify(raw []byte, admissionTime time.Time) error {
+	if authority.store == nil || authority.policy == nil {
+		return fmt.Errorf("%w: Store-bound verifier policy", ErrAuthorityRequired)
+	}
+	return authority.policy.verify(raw, admissionTime)
+}
+
 // AppendBridgeVerificationSubmission intentionally has no live authority
 // input. It remains fail-closed so a direct Store caller cannot bypass verifier
 // enrollment. Historical replay uses replayVerificationCommit instead.
 func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationCommitResult, error) {
-	return VerificationCommitResult{}, fmt.Errorf("%w: enrolled verifier policy", ErrAuthorityRequired)
+	return VerificationCommitResult{}, fmt.Errorf("%w: Store-bound verifier authority", ErrAuthorityRequired)
 }
 
-// AppendBridgeVerificationSubmissionWithPolicy is the live Store admission
-// seam. Policy verification happens before the underlying implementation can
-// inspect duplicate state, references, or mutate the journal.
-func (s *Store) AppendBridgeVerificationSubmissionWithPolicy(raw []byte, policy *VerifierPolicy) (VerificationCommitResult, error) {
-	if err := policy.verify(raw, s.now().UTC()); err != nil {
+// AppendBridgeVerificationSubmissionAuthorized is the live Store admission
+// seam. The opaque authority is Store-bound and carries a policy that could
+// only be bound using the verifier-policy capability minted with this Store.
+// Verification happens before duplicate/conflict/reference/journal work.
+func (s *Store) AppendBridgeVerificationSubmissionAuthorized(raw []byte, authority StoreVerifierAuthority) (VerificationCommitResult, error) {
+	if authority.store != s || authority.policy == nil {
+		return VerificationCommitResult{}, fmt.Errorf("%w: Store-bound verifier authority", ErrAuthorityRequired)
+	}
+	if err := authority.policy.verify(raw, s.now().UTC()); err != nil {
 		return VerificationCommitResult{}, err
 	}
 	return s.appendBridgeVerificationSubmission(raw)
