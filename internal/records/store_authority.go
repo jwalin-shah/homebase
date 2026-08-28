@@ -27,8 +27,8 @@ type StoreAuthority struct {
 // Composition roots should inject each capability only into the subsystem
 // that already authenticated that authority domain.
 type StoreAuthorities struct {
-	Promotion     StoreAuthority
-	ContractGrant StoreAuthority
+	Promotion      StoreAuthority
+	ContractGrant  StoreAuthority
 	VerifierPolicy StoreAuthority
 }
 
