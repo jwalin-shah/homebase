@@ -13,14 +13,14 @@ func TestContractGrantCommitIsAtomicIdempotentAndRebuildable(t *testing.T) {
 	specification := validSpecification(t)
 	contract := validContract(t, "contract-1")
 	grant := validGrant(t, "grant-1", "contract-1", "idem-1")
-	first, err := store.AppendContractAndGrant(specification, contract, grant)
+	first, err := store.appendContractAndGrant(specification, contract, grant)
 	if err != nil {
 		t.Fatalf("first contract/grant commit: %v", err)
 	}
 	if first.Existing || first.Sequence != 2 || first.Contract.ID != "contract-1" || first.Grant.ID != "grant-1" || first.Specification.ID != "spec:homebase:test:v1" {
 		t.Fatalf("unexpected first result: %+v", first)
 	}
-	second, err := store.AppendContractAndGrant(specification, contract, grant)
+	second, err := store.appendContractAndGrant(specification, contract, grant)
 	if err != nil {
 		t.Fatalf("duplicate contract/grant commit: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestContractGrantCommitIsAtomicIdempotentAndRebuildable(t *testing.T) {
 	if got := len(store.List()); got != 4 {
 		t.Fatalf("record count = %d, want 4", got)
 	}
-	if _, err := store.AppendContractAndGrant(specification, contract, validGrant(t, "grant-2", "contract-1", "idem-2")); err == nil {
+	if _, err := store.appendContractAndGrant(specification, contract, validGrant(t, "grant-2", "contract-1", "idem-2")); err == nil {
 		t.Fatal("conflicting grant replaced the committed pair")
 	}
 	if got := len(store.List()); got != 4 {
@@ -77,7 +77,7 @@ func TestContractGrantCommitRejectsMissingContractLineageAtomically(t *testing.T
 	store, j, _ := newStoreWithHistoricalRecords(t, validApprovalDecision(t))
 	defer j.Close()
 	grant := validGrant(t, "grant-1", "missing-contract", "idem-1")
-	if _, err := store.AppendContractAndGrant(validSpecification(t), validContract(t, "contract-1"), grant); err == nil {
+	if _, err := store.appendContractAndGrant(validSpecification(t), validContract(t, "contract-1"), grant); err == nil {
 		t.Fatal("contract/grant commit accepted mismatched grant lineage")
 	}
 	if got := len(store.List()); got != 1 {
@@ -96,7 +96,7 @@ func TestContractGrantCommitRejectsUnapprovedSpecification(t *testing.T) {
 	specification["content_hash"] = payloadHash(t, specification["payload"])
 	specificationRaw := mustJSON(t, specification)
 	contractRaw, grantRaw := bindSpecification(t, specificationRaw)
-	if _, err := store.AppendContractAndGrant(specificationRaw, contractRaw, grantRaw); !errors.Is(err, ErrInvalidRecord) {
+	if _, err := store.appendContractAndGrant(specificationRaw, contractRaw, grantRaw); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("unapproved specification error = %v, want ErrInvalidRecord", err)
 	}
 	if got := len(store.List()); got != 1 {
@@ -123,7 +123,7 @@ func TestContractGrantCommitRejectsMismatchedSpecificationDigest(t *testing.T) {
 	grantPayload := grant["payload"].(map[string]any)
 	grantPayload["specification_digest"] = strings.Repeat("f", 64)
 	grant["content_hash"] = payloadHash(t, grantPayload)
-	if _, err := store.AppendContractAndGrant(specification, mustJSON(t, contract), mustJSON(t, grant)); !errors.Is(err, ErrInvalidRecord) {
+	if _, err := store.appendContractAndGrant(specification, mustJSON(t, contract), mustJSON(t, grant)); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("mismatched specification digest error = %v, want ErrInvalidRecord", err)
 	}
 	if got := len(store.List()); got != 1 {
@@ -148,7 +148,7 @@ func TestApprovedSpecificationMustMatchDecisionIdentityAndDigest(t *testing.T) {
 			specification["content_hash"] = payloadHash(t, specification["payload"])
 			specificationRaw := mustJSON(t, specification)
 			contractRaw, grantRaw := bindSpecification(t, specificationRaw)
-			if _, err := store.AppendContractAndGrant(specificationRaw, contractRaw, grantRaw); !errors.Is(err, ErrInvalidRecord) {
+			if _, err := store.appendContractAndGrant(specificationRaw, contractRaw, grantRaw); !errors.Is(err, ErrInvalidRecord) {
 				t.Fatalf("mismatched approved specification error = %v, want ErrInvalidRecord", err)
 			}
 			if got := len(store.List()); got != 1 {
