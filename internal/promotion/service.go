@@ -160,6 +160,7 @@ type Outcome struct {
 
 type Service struct {
 	records     *records.Store
+	authority   records.StoreAuthority
 	verify      VerifyFunc
 	receiptPriv ed25519.PrivateKey
 	receiptPub  ed25519.PublicKey
@@ -168,7 +169,17 @@ type Service struct {
 	byNonce     map[string]Receipt
 }
 
+// NewService constructs a replay-capable service without live promotion
+// authority. Callers that need to commit a new promotion must use
+// NewServiceWithAuthority with the Store-bound Promotion capability.
 func NewService(store *records.Store, verify VerifyFunc, receiptPrivate ed25519.PrivateKey, now func() time.Time) (*Service, error) {
+	return NewServiceWithAuthority(store, records.StoreAuthority{}, verify, receiptPrivate, now)
+}
+
+// NewServiceWithAuthority constructs the live promotion service. The opaque
+// StoreAuthority is injected only by the trusted composition root after the
+// transcript authenticator is configured.
+func NewServiceWithAuthority(store *records.Store, authority records.StoreAuthority, verify VerifyFunc, receiptPrivate ed25519.PrivateKey, now func() time.Time) (*Service, error) {
 	if store == nil || verify == nil || len(receiptPrivate) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("%w: records store, verifier, and receipt private key are required", ErrInvalidPromotion)
 	}
@@ -177,6 +188,7 @@ func NewService(store *records.Store, verify VerifyFunc, receiptPrivate ed25519.
 	}
 	service := &Service{
 		records:     store,
+		authority:   authority,
 		verify:      verify,
 		receiptPriv: append(ed25519.PrivateKey(nil), receiptPrivate...),
 		receiptPub:  append(ed25519.PublicKey(nil), receiptPrivate.Public().(ed25519.PublicKey)...),
@@ -262,7 +274,7 @@ func (s *Service) Promote(ctx context.Context, rawCase, detachedSignature []byte
 	if err != nil {
 		return outcome, fmt.Errorf("%w: encode receipt: %v", ErrInvalidPromotion, err)
 	}
-	commit, err := s.records.AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw)
+	commit, err := s.records.AppendPromotionCommitAuthorized(s.authority, decisionRaw, evidenceRaw, receiptRaw)
 	if err != nil {
 		if errors.Is(err, records.ErrConflict) {
 			return outcome, fmt.Errorf("%w: %v", ErrConflict, err)
@@ -566,8 +578,8 @@ func parseRecord(raw []byte) (records.Record, error) {
 		return records.Record{}, err
 	}
 	// Validate by using a temporary in-memory journal/store would obscure the
-	// atomicity boundary. The final AppendPromotionCommit repeats full validation
-	// and returns the authoritative typed records.
+	// atomicity boundary. The final AppendPromotionCommitAuthorized repeats full
+	// validation and returns the authoritative typed records.
 	var result records.Record
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		return records.Record{}, err
