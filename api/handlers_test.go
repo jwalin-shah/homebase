@@ -72,27 +72,13 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordStore, recordJournal := newAPIStoreWithHistoricalRecords(t,
+		bridgeApprovalDecision(t),
+		bridgeSpecification(t),
+		bridgeVerificationContract(t, "contract-1"),
+		bridgeGrant(t, "grant-1", "contract-1"),
+	)
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeVerificationContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
-		t.Fatal(err)
-	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -174,18 +160,8 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordStore, recordJournal := newAPIStoreWithHistoricalRecords(t, bridgeApprovalDecision(t))
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -237,27 +213,13 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordStore, recordJournal := newAPIStoreWithHistoricalRecords(t,
+		bridgeApprovalDecision(t),
+		bridgeSpecification(t),
+		bridgeContract(t, "contract-1"),
+		bridgeGrant(t, "grant-1", "contract-1"),
+	)
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
-		t.Fatal(err)
-	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
