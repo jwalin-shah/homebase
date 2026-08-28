@@ -94,7 +94,7 @@ func (p *VerifierPolicy) verify(raw []byte, admissionTime time.Time) error {
 		if admissionTime.Before(authority.ValidFrom) || !admissionTime.Before(authority.ValidUntil) {
 			return fmt.Errorf("%w: verifier authority is not active at admission", ErrAuthorityRequired)
 		}
-		return verifyProductionBridgeReceiptAttestation(receipt, authority.PublicKey, authority.KeyID)
+		return VerifyBridgeReceiptAttestation(raw, authority.PublicKey, authority.KeyID)
 	}
 	return fmt.Errorf("%w: verifier key %q is not enrolled", ErrAuthorityRequired, receipt.Attestation.KeyID)
 }
