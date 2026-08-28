@@ -41,7 +41,7 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize typed record journal: %v", err)
 	}
 	defer recordJournal.Close()
-	recordStore, _, err := records.NewStoreWithAuthorities(recordJournal)
+	recordStore, storeAuthorities, err := records.NewStoreWithAuthorities(recordJournal)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to replay typed record journal: %v", err)
 	}
@@ -88,7 +88,7 @@ func main() {
 	if captainKey, publicErr := loadKey("HOMEBASE_CAPTAIN_PUBLIC_KEY_HEX", "HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE", ed25519.PublicKeySize); publicErr == nil {
 		captainPublic = ed25519.PublicKey(captainKey)
 		if receiptPrivate, privateErr := loadKey("HOMEBASE_RECEIPT_PRIVATE_KEY_HEX", "HOMEBASE_RECEIPT_PRIVATE_KEY_FILE", ed25519.PrivateKeySize); privateErr == nil {
-			promotionService, err = promotion.NewService(recordStore, promotion.Ed25519Verifier("captain", captainPublic), ed25519.PrivateKey(receiptPrivate), nil)
+			promotionService, err = promotion.NewServiceWithAuthority(recordStore, storeAuthorities.Promotion, promotion.Ed25519Verifier("captain", captainPublic), ed25519.PrivateKey(receiptPrivate), nil)
 			if err != nil {
 				log.Printf("WARNING: transcript promotion unavailable: authority state could not be rebuilt")
 			}
@@ -121,7 +121,7 @@ func main() {
 	} else {
 		log.Printf("WARNING: production verifier receipts unavailable: %v", verifierErr)
 	}
-	server := api.NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID)
+	server := api.NewServerWithStoreAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID, storeAuthorities.ContractGrant)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
