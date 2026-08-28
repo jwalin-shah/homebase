@@ -42,12 +42,11 @@ type preparedContractGrant struct {
 	grant                  Record
 }
 
-// AppendContractAndGrant persists the captain-approved specification, task
-// contract, and scoped capability grant in one journal entry. The caller must
-// already have authenticated the owner authority; this package enforces the
-// specification approval chain, record schema, lineage, and atomic/idempotent
-// storage semantics.
-func (s *Store) AppendContractAndGrant(specificationRaw, contractRaw, grantRaw []byte) (ContractGrantCommitResult, error) {
+// appendContractAndGrant persists the captain-approved specification, task
+// contract, and scoped capability grant in one journal entry. The public live
+// entry point is AppendContractAndGrantAuthorized; keeping this implementation
+// package-private prevents callers from bypassing StoreAuthority mediation.
+func (s *Store) appendContractAndGrant(specificationRaw, contractRaw, grantRaw []byte) (ContractGrantCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureHealthy(); err != nil {
