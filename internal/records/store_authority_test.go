@@ -9,7 +9,7 @@ import (
 func TestSpecializedStoreAuthorityRejectsMissingCrossStoreAndWrongDomainBeforeParse(t *testing.T) {
 	storeA, authoritiesA, journalA := newStoreWithAuthoritiesForTest(t)
 	defer journalA.Close()
-	storeB, authoritiesB, journalB := newStoreWithAuthoritiesForTest(t)
+	_, authoritiesB, journalB := newStoreWithAuthoritiesForTest(t)
 	defer journalB.Close()
 
 	malformed := []byte(`{"not":"a record"}`)
