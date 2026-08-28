@@ -58,48 +58,15 @@ func TestNewBridgeVerificationStoreRequiresEnrolledProductionVerifier(t *testing
 }
 
 // A1 verifier-policy tests need historical authoritative prerequisites, not a
-// second new-submission escape hatch. Seed those records directly into the
-// journal and reopen the Store so future A0 hardening of generic Store.Append
-// cannot mask verifier-policy failures during test setup. This also exercises
-// the intended invariant that historical authoritative records remain readable
-// after new-submission admission is tightened.
+// second new-submission escape hatch. Reuse the generic replay helper so A0
+// fixture migration follows one invariant across the records package.
 func newStoreWithHistoricalVerificationAuthority(t *testing.T, verifierID string) (*Store, *journal.BinaryJournal) {
 	t.Helper()
-	path := t.TempDir() + "/records.journal"
-	j, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	records := [][]byte{
+	store, j, _ := newStoreWithHistoricalRecords(t,
 		validApprovalDecision(t),
 		validSpecification(t),
 		validBridgeContract(t, "contract-1", verifierID),
 		validGrant(t, "grant-1", "contract-1", "idem-1"),
-	}
-	for _, raw := range records {
-		encoded, err := journal.EncodeRecord(journal.RecordKindSharedRecord, raw)
-		if err != nil {
-			j.Close()
-			t.Fatal(err)
-		}
-		if _, err := j.Append(encoded); err != nil {
-			j.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := j.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := journal.OpenBinaryJournal(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(reopened)
-	if err != nil {
-		reopened.Close()
-		t.Fatal(err)
-	}
-	return store, reopened
+	)
+	return store, j
 }
