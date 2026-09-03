@@ -8,13 +8,14 @@ import (
 )
 
 const (
-	RecordKindEventBatch                 = "EventBatch"
-	RecordKindDecisionRecord             = "DecisionRecord"
-	RecordKindSharedRecord               = "SharedRecord"
-	RecordKindPromotionCommit            = "PromotionCommit"
-	RecordKindVerificationCommit         = "VerificationCommit"
-	RecordKindContractGrantCommit        = "ContractGrantCommit"
-	RecordEnvelopeVersion         uint16 = 1
+	RecordKindEventBatch                         = "EventBatch"
+	RecordKindDecisionRecord                     = "DecisionRecord"
+	RecordKindSharedRecord                       = "SharedRecord"
+	RecordKindPromotionCommit                    = "PromotionCommit"
+	RecordKindVerificationCommit                 = "VerificationCommit"
+	RecordKindContractGrantCommit                = "ContractGrantCommit"
+	RecordKindSpecificationDecisionCommit        = "SpecificationDecisionCommit"
+	RecordEnvelopeVersion                 uint16 = 1
 )
 
 var ErrNotEnvelope = errors.New("journal payload is not an explicit record envelope")

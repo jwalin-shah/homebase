@@ -39,6 +39,7 @@ All routes are `POST` and bind to `127.0.0.1` only. Verified in
 | `/api/v1/records` | `HandleAppendExternalRecord` | Public ingress for Trajectory and other untrusted producers; validates the envelope, verifies the payload hash, fsyncs before returning success |
 | `/api/v1/promotions/transcript` | `HandlePromoteTranscript` | Admission of a transcript-derived decision through the authenticated promotion service; evidence, decision, and signed receipt committed together |
 | `/api/v1/contracts/grants` | `HandleAppendContractGrant` | Owner-signed admission of Specification + Contract + scoped CapabilityGrant as one journal commit |
+| `/api/v1/specifications/decisions` | `HandleAppendSpecificationDecision` | Owner-signed admission of a captain-approved Specification + its approving Decision as one atomic, idempotent journal commit; reuses the captain/contract signing key |
 | `/api/v1/contracts/grants/check` | `HandleCheckContractGrant` | Read-only Bridge admission check: proves an approved Contract + active CapabilityGrant exist with exact scope match, freshness, and expiry; Bridge cannot mint or extend authority |
 | `/api/v1/verifications/bridge` | `HandleAppendBridgeVerification` | Accepts a Bridge-signed transport receipt; derives Claim/Proof/VerificationReceipt records, checks them against the pre-existing Contract and CapabilityGrant, commits atomically |
 

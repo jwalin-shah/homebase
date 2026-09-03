@@ -15,17 +15,17 @@ evidence:
     dafny_version: 4.11.0
     go_version: 1.22.0
   inputs:
-    effect_id: eff-123
     failure_point: after_remote_apply_before_journal_append
+    effect_id: eff-123
   assertions:
-    remote_application_count: 1
-    idempotency_key_reused: true
-    second_observation: 0
-    first_claim_epoch: 1
     second_claim_epoch: 2
-    stale_epoch_finalization_rejected: true
-    execution_attempt_count: 2
-    first_observation: 3
     final_effect_state: Succeeded
+    stale_epoch_finalization_rejected: true
     journal_replay_equal: true
     retry_bound_respected: true
+    remote_application_count: 1
+    execution_attempt_count: 2
+    idempotency_key_reused: true
+    first_observation: 3
+    second_observation: 0
+    first_claim_epoch: 1

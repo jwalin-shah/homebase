@@ -223,6 +223,67 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleAppendSpecificationDecision admits a captain-approved Specification
+// together with its approving Decision as one owner-signed journal commit.
+// This is the smallest authenticated authority path for that pair: Bridge,
+// workers, and AppendExternal have no route that can create or replace
+// either record. It reuses the same captain/contract signing key as
+// HandleAppendContractGrant rather than minting a separate authority.
+func (s *Server) HandleAppendSpecificationDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.contractKey) != ed25519.PublicKeySize {
+		http.Error(w, "Specification authority service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var request struct {
+		Specification json.RawMessage `json:"specification"`
+		Decision      json.RawMessage `json:"decision"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid Specification/Decision JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one Specification/Decision bundle", http.StatusBadRequest)
+		return
+	}
+	canonical := rawCanonicalJSON(mustMarshalAuthorityRequest(request))
+	signature, err := decodeSignature(r.Header.Get("X-HomeBase-Specification-Signature"))
+	if err != nil || !ed25519.Verify(s.contractKey, canonical, signature) {
+		http.Error(w, "Specification authority signature failed", http.StatusUnauthorized)
+		return
+	}
+	result, err := s.recordStore.AppendSpecificationAndDecision(request.Specification, request.Decision)
+	if err != nil {
+		switch {
+		case errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "failed to persist Specification/Decision", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if result.Existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
+		"specification_id": result.Specification.ID,
+		"decision_id":      result.Decision.ID,
+		"existing":         result.Existing,
+		"sequence":         result.Sequence,
+	})
+}
+
 // HandleCheckContractGrant lets Bridge prove that the owner-authenticated
 // Contract + CapabilityGrant pair exists before it creates a worktree. This
 // endpoint is read-only: Bridge cannot mint, replace, or extend authority.

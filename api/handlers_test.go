@@ -231,6 +231,220 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 	}
 }
 
+func TestHandleAppendSpecificationDecisionAuthenticatesAndCommitsAtomically(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	bundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(bridgeApprovalDecision(t)),
+	})
+	sign := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+
+	if _, err := recordStore.Get("spec:homebase:api-test:v1"); err == nil {
+		t.Fatal("specification unexpectedly pre-exists before authenticated append")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(bundle))
+	response := httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("first Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var first struct {
+		SpecificationID string `json:"specification_id"`
+		DecisionID      string `json:"decision_id"`
+		Existing        bool   `json:"existing"`
+		Sequence        uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first Specification/Decision response: %v", err)
+	}
+	if first.Existing || first.SpecificationID != "spec:homebase:api-test:v1" || first.DecisionID != "decision:spec-api-test" {
+		t.Fatalf("unexpected first response: %+v", first)
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after Specification/Decision append = %d, want 2", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(bundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var second struct {
+		Existing bool   `json:"existing"`
+		Sequence uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode duplicate Specification/Decision response: %v", err)
+	}
+	if !second.Existing || second.Sequence != first.Sequence {
+		t.Fatalf("duplicate response = %+v, want existing at sequence %d", second, first.Sequence)
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after duplicate append = %d, want unchanged 2", got)
+	}
+
+	conflicting := decodeObject(t, bridgeApprovalDecision(t))
+	conflicting["payload"].(map[string]any)["decision"] = "approve specification spec:homebase:api-test:v1 (revised)"
+	conflicting["content_hash"] = payloadHash(t, conflicting["payload"])
+	conflictBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(mustJSON(t, conflicting)),
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(conflictBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(conflictBundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflicting Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after rejected conflict = %d, want unchanged 2", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("bad Specification authority signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after bad signature = %d, want unchanged 2", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("missing signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	_, otherPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSpecification := decodeObject(t, bridgeSpecification(t))
+	otherSpecification["id"] = "spec:homebase:other-test:v1"
+	otherDecision := decodeObject(t, bridgeApprovalDecision(t))
+	otherDecision["id"] = "decision:spec-other-test"
+	otherDecision["payload"].(map[string]any)["specification_ref"].(map[string]any)["id"] = "spec:homebase:other-test:v1"
+	otherDecision["content_hash"] = payloadHash(t, otherDecision["payload"])
+	otherBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(mustJSON(t, otherSpecification)),
+		"decision":      json.RawMessage(mustJSON(t, otherDecision)),
+	})
+	canonicalOther, err := records.CanonicalJSONValue(otherBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(otherBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", hex.EncodeToString(ed25519.Sign(otherPrivate, canonicalOther)))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-authority signer status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after wrong-authority signer = %d, want unchanged 2", got)
+	}
+}
+
+func TestHandleAppendSpecificationDecisionRejectsWrongStatusAndMissingReference(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	sign := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+
+	proposed := decodeObject(t, bridgeSpecification(t))
+	proposed["status"] = "proposed"
+	proposed["authority_class"] = records.AuthorityAgentProposal
+	proposed["source"] = map[string]any{"id": "knowledge-engine", "role": "knowledge_engine"}
+	delete(proposed["payload"].(map[string]any), "approval_ref")
+	proposed["content_hash"] = payloadHash(t, proposed["payload"])
+	proposedBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(mustJSON(t, proposed)),
+		"decision":      json.RawMessage(bridgeApprovalDecision(t)),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(proposedBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(proposedBundle))
+	response := httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("proposed specification status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 0 {
+		t.Fatalf("rejected proposed specification left %d records, want 0", got)
+	}
+
+	decision := decodeObject(t, bridgeApprovalDecision(t))
+	delete(decision["payload"].(map[string]any), "specification_ref")
+	decision["content_hash"] = payloadHash(t, decision["payload"])
+	missingRefBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(mustJSON(t, decision)),
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(missingRefBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(missingRefBundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing specification_ref status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 0 {
+		t.Fatalf("rejected missing-reference bundle left %d records, want 0", got)
+	}
+}
+
 func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *testing.T) {
 	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
 	if err != nil {
