@@ -433,6 +433,19 @@ func (s *Store) replayVerificationCommit(sequence uint64, raw []byte) error {
 	return nil
 }
 
+// GetVerificationReceiptCanonical returns the canonical JSON bytes of a
+// durable VerificationReceipt by exact ID. Wrong-kind IDs are reported as not
+// found so callers cannot probe for other record kinds.
+func (s *Store) GetVerificationReceiptCanonical(id string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[id]
+	if !ok || record.record.Kind != "VerificationReceipt" {
+		return nil, ErrNotFound
+	}
+	return bytes.Clone(record.canonical), nil
+}
+
 func (s *Store) verificationResultForExisting(existing storedVerification) VerificationCommitResult {
 	records := make([]Record, 0, len(existing.recordIDs))
 	for _, id := range existing.recordIDs {

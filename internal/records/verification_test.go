@@ -297,6 +297,45 @@ func TestBridgeVerificationSubmissionPersistsProvenanceReceipt(t *testing.T) {
 	}
 }
 
+func TestGetVerificationReceiptCanonicalReturnsStoredBytesAndHidesOtherKinds(t *testing.T) {
+	path := t.TempDir() + "/records.journal"
+	j, err := journal.OpenBinaryJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	store, err := NewStore(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendApprovedSpecification(t, store)
+	if _, err := store.Append(validBridgeContract(t, "contract-1", legacyVerifierID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
+		t.Fatal(err)
+	}
+	tree := "0123456789012345678901234567890123456789"
+	result, err := store.AppendBridgeVerificationSubmission(bridgeSubmissionWithProvenance(t, "contract-1", "grant-1", tree))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptID := result.Receipt.ID
+	canonical, err := store.GetVerificationReceiptCanonical(receiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(canonical) == 0 {
+		t.Fatal("canonical bytes are empty")
+	}
+	if _, err := store.GetVerificationReceiptCanonical("contract-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-receipt id error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetVerificationReceiptCanonical("receipt:missing:0123456789012345678901234567890123456789"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing receipt error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestBridgeVerificationSubmissionIsAtomicIdempotentAndRebuildable(t *testing.T) {
 	path := t.TempDir() + "/records.journal"
 	j, err := journal.OpenBinaryJournal(path)

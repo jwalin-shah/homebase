@@ -133,8 +133,13 @@ func main() {
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
 	mux.HandleFunc("/api/v1/contracts/grants", server.HandleAppendContractGrant)
+	mux.HandleFunc("/api/v1/specifications/decisions", server.HandleAppendSpecificationDecision)
 	mux.HandleFunc("/api/v1/contracts/grants/check", server.HandleCheckContractGrant)
 	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerification)
+	mux.HandleFunc("/api/v1/verifications/receipts/read", server.HandleReadVerificationReceipt)
+	// LaunchAgent health contract (DAEMON_HEALTH_URL): unauthenticated,
+	// non-secret readiness only. See api.Server.HandleStatus.
+	mux.HandleFunc("/v1/status", server.HandleStatus)
 
 	// 6. Start the Engine
 	port := os.Getenv("PORT")

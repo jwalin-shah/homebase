@@ -1,0 +1,18 @@
+{
+  "dirty_files": [
+    "internal/records/verification.go",
+    "api/handlers.go",
+    "cmd/homebase/main.go",
+    "api/handlers_test.go",
+    "Makefile",
+    "README.md",
+    "internal/records/verification_test.go",
+    "cmd/homebase/receipt_readback_runtime_test.go",
+    ".tldr/reports/CP-038X-receipt-readback-runtime.md",
+    "scripts/prove-receipt-readback-deployment.sh",
+    "cmd/homebase/deployment_readiness_test.go",
+    "scripts/prove-docs-freshness.sh"
+  ],
+  "first_dirty_at": "2026-09-01T18:51:06.280974Z",
+  "last_dirty_at": "2026-09-01T21:56:58.524542Z"
+}

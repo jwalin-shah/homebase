@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check vet clean ci install
+.PHONY: build test fmt fmt-check vet clean ci install prove-receipt-readback prove-receipt-readback-deployment prove-docs-freshness
 
 build:
 	go build ./...
@@ -17,6 +17,18 @@ fmt-check:
 
 vet:
 	go vet ./...
+
+prove-receipt-readback:
+	go test -v -count=1 ./api -run 'TestHandleReadVerificationReceipt'
+	@echo "✓ verification receipt read-back seam proved"
+
+prove-receipt-readback-deployment:
+	@chmod +x scripts/prove-receipt-readback-deployment.sh
+	scripts/prove-receipt-readback-deployment.sh
+
+prove-docs-freshness:
+	@chmod +x scripts/prove-docs-freshness.sh
+	scripts/prove-docs-freshness.sh
 
 prove:
 	@if [ ! -f tla2tools.jar ]; then wget -qO- https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar > tla2tools.jar; fi

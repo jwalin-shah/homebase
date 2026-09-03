@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	"homebase/internal/types"
 	"homebase/internal/validation"
 )
+
+var receiptIDPattern = regexp.MustCompile(`^receipt:[^:]+:[0-9a-f]{40,64}$`)
 
 // Server binds the HTTP layer to our formal Graph Engine.
 type Server struct {
@@ -220,6 +223,67 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 		"grant_id":    result.Grant.ID,
 		"existing":    result.Existing,
 		"sequence":    result.Sequence,
+	})
+}
+
+// HandleAppendSpecificationDecision admits a captain-approved Specification
+// together with its approving Decision as one owner-signed journal commit.
+// This is the smallest authenticated authority path for that pair: Bridge,
+// workers, and AppendExternal have no route that can create or replace
+// either record. It reuses the same captain/contract signing key as
+// HandleAppendContractGrant rather than minting a separate authority.
+func (s *Server) HandleAppendSpecificationDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.contractKey) != ed25519.PublicKeySize {
+		http.Error(w, "Specification authority service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var request struct {
+		Specification json.RawMessage `json:"specification"`
+		Decision      json.RawMessage `json:"decision"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid Specification/Decision JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one Specification/Decision bundle", http.StatusBadRequest)
+		return
+	}
+	canonical := rawCanonicalJSON(mustMarshalAuthorityRequest(request))
+	signature, err := decodeSignature(r.Header.Get("X-HomeBase-Specification-Signature"))
+	if err != nil || !ed25519.Verify(s.contractKey, canonical, signature) {
+		http.Error(w, "Specification authority signature failed", http.StatusUnauthorized)
+		return
+	}
+	result, err := s.recordStore.AppendSpecificationAndDecision(request.Specification, request.Decision)
+	if err != nil {
+		switch {
+		case errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "failed to persist Specification/Decision", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if result.Existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
+		"specification_id": result.Specification.ID,
+		"decision_id":      result.Decision.ID,
+		"existing":         result.Existing,
+		"sequence":         result.Sequence,
 	})
 }
 
@@ -490,12 +554,94 @@ func (s *Server) HandleAppendBridgeVerification(w http.ResponseWriter, r *http.R
 	})
 }
 
+// HandleReadVerificationReceipt returns a durable VerificationReceipt by exact
+// ID. Bridge signs the lookup request; HomeBase does not mint or mutate
+// receipts through this path.
+func (s *Server) HandleReadVerificationReceipt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.recordStore == nil || len(s.bridgeKey) != ed25519.PublicKeySize {
+		http.Error(w, "Bridge verification read service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var request struct {
+		ReceiptID string `json:"receipt_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid verification receipt read JSON", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain one verification receipt read", http.StatusBadRequest)
+		return
+	}
+	receiptID := strings.TrimSpace(request.ReceiptID)
+	if receiptID == "" || !receiptIDPattern.MatchString(receiptID) {
+		http.Error(w, "receipt_id must match receipt:<task>:<tree>", http.StatusBadRequest)
+		return
+	}
+	canonical := rawCanonicalJSON(mustMarshalAuthorityRequest(map[string]string{"receipt_id": receiptID}))
+	signature, err := decodeSignature(r.Header.Get("X-Bridge-Verification-Read-Signature"))
+	if err != nil || !ed25519.Verify(s.bridgeKey, canonical, signature) {
+		http.Error(w, "Bridge verification read signature failed", http.StatusUnauthorized)
+		return
+	}
+	raw, err := s.recordStore.GetVerificationReceiptCanonical(receiptID)
+	if err != nil {
+		if errors.Is(err, records.ErrNotFound) {
+			http.Error(w, "verification receipt not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to read verification receipt", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+	_, _ = w.Write([]byte("\n"))
+}
+
 func rawCanonicalJSON(raw []byte) []byte {
 	canonical, err := records.CanonicalJSONValue(raw)
 	if err != nil {
 		return nil
 	}
 	return canonical
+}
+
+// HandleStatus reports the minimal, non-secret process-readiness facts
+// required by the LaunchAgent health contract (DAEMON_HEALTH_URL points at
+// this route). It is intentionally unauthenticated: the daemon-wrapper
+// health check has no signing capability, and the response carries no
+// records, keys, journal paths, or other private data — only whether the
+// durable stores this process depends on were opened successfully. It never
+// mutates state and never touches the receipt, authority, or journal
+// boundaries served by the /api/v1/* routes.
+func (s *Server) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body := struct {
+		Status           string `json:"status"`
+		Service          string `json:"service"`
+		LedgerReady      bool   `json:"ledger_ready"`
+		RecordStoreReady bool   `json:"record_store_ready"`
+	}{
+		Status:           "ok",
+		Service:          "homebase",
+		LedgerReady:      s.store != nil,
+		RecordStoreReady: s.recordStore != nil,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // HandlePromoteTranscript admits a transcript-derived decision only through

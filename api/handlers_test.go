@@ -13,6 +13,7 @@ import (
 	"homebase/internal/validation"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -168,6 +169,113 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	}
 }
 
+func TestHandleReadVerificationReceiptReturnsCanonicalStoredReceipt(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeVerificationContract(t, "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithBridge(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, public)
+	raw := bridgeReceipt(t)
+	signReceipt := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+	appendRequest := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
+	appendRequest.Header.Set("X-Bridge-Verification-Signature", signReceipt(raw))
+	appendRequest.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
+	appendResponse := httptest.NewRecorder()
+	server.HandleAppendBridgeVerification(appendResponse, appendRequest)
+	if appendResponse.Code != http.StatusCreated {
+		t.Fatalf("append status = %d, body = %s", appendResponse.Code, appendResponse.Body.String())
+	}
+
+	receiptID := "receipt:task-1:0123456789012345678901234567890123456789"
+	readBody := mustJSON(t, map[string]string{"receipt_id": receiptID})
+	signRead := func(raw []byte) string {
+		canonical, err := records.CanonicalJSONValue(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+	readRequest := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/receipts/read", bytes.NewReader(readBody))
+	readRequest.Header.Set("X-Bridge-Verification-Read-Signature", signRead(readBody))
+	readResponse := httptest.NewRecorder()
+	server.HandleReadVerificationReceipt(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("read status = %d, body = %s", readResponse.Code, readResponse.Body.String())
+	}
+	canonical, err := recordStore.GetVerificationReceiptCanonical(receiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(readResponse.Body.Bytes(), append(canonical, '\n')) {
+		t.Fatalf("read response is not canonical stored bytes:\n got %s\n want %s", readResponse.Body.Bytes(), append(canonical, '\n'))
+	}
+	readAgain := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/receipts/read", bytes.NewReader(readBody))
+	readAgain.Header.Set("X-Bridge-Verification-Read-Signature", signRead(readBody))
+	readAgainResponse := httptest.NewRecorder()
+	server.HandleReadVerificationReceipt(readAgainResponse, readAgain)
+	if !bytes.Equal(readResponse.Body.Bytes(), readAgainResponse.Body.Bytes()) {
+		t.Fatal("repeated read returned different bytes")
+	}
+
+	missingBody := mustJSON(t, map[string]string{"receipt_id": "receipt:task-9:0123456789012345678901234567890123456789"})
+	missingRequest := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/receipts/read", bytes.NewReader(missingBody))
+	missingRequest.Header.Set("X-Bridge-Verification-Read-Signature", signRead(missingBody))
+	missingResponse := httptest.NewRecorder()
+	server.HandleReadVerificationReceipt(missingResponse, missingRequest)
+	if missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing receipt status = %d, body = %s", missingResponse.Code, missingResponse.Body.String())
+	}
+
+	badIDBody := mustJSON(t, map[string]string{"receipt_id": "not-a-receipt"})
+	badIDRequest := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/receipts/read", bytes.NewReader(badIDBody))
+	badIDRequest.Header.Set("X-Bridge-Verification-Read-Signature", signRead(badIDBody))
+	badIDResponse := httptest.NewRecorder()
+	server.HandleReadVerificationReceipt(badIDResponse, badIDRequest)
+	if badIDResponse.Code != http.StatusBadRequest {
+		t.Fatalf("malformed receipt_id status = %d, body = %s", badIDResponse.Code, badIDResponse.Body.String())
+	}
+
+	badSigRequest := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/receipts/read", bytes.NewReader(readBody))
+	badSigRequest.Header.Set("X-Bridge-Verification-Read-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	badSigResponse := httptest.NewRecorder()
+	server.HandleReadVerificationReceipt(badSigResponse, badSigRequest)
+	if badSigResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("bad read signature status = %d, body = %s", badSigResponse.Code, badSigResponse.Body.String())
+	}
+}
+
 func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T) {
 	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
 	if err != nil {
@@ -228,6 +336,231 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 	server.HandleAppendContractGrant(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("bad Contract authority signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandleAppendSpecificationDecisionAuthenticatesAndCommitsAtomically(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	bundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(bridgeApprovalDecision(t)),
+	})
+	sign := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+
+	// Neither AppendExternal nor any other unauthenticated route can create
+	// this pair: it does not exist in the store before the owner-signed call.
+	if _, err := recordStore.Get("spec:homebase:api-test:v1"); err == nil {
+		t.Fatal("specification unexpectedly pre-exists before authenticated append")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(bundle))
+	response := httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("first Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var first struct {
+		SpecificationID string `json:"specification_id"`
+		DecisionID      string `json:"decision_id"`
+		Existing        bool   `json:"existing"`
+		Sequence        uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first Specification/Decision response: %v", err)
+	}
+	if first.Existing || first.SpecificationID != "spec:homebase:api-test:v1" || first.DecisionID != "decision:spec-api-test" {
+		t.Fatalf("unexpected first response: %+v", first)
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after Specification/Decision append = %d, want 2", got)
+	}
+
+	// Duplicate-identical resubmission (a lost response) is idempotent.
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(bundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var second struct {
+		Existing bool   `json:"existing"`
+		Sequence uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode duplicate Specification/Decision response: %v", err)
+	}
+	if !second.Existing || second.Sequence != first.Sequence {
+		t.Fatalf("duplicate response = %+v, want existing at sequence %d", second, first.Sequence)
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after duplicate append = %d, want unchanged 2", got)
+	}
+
+	// A conflicting bundle for the same Specification ID is rejected and
+	// leaves the journal/store unchanged.
+	conflicting := decodeObject(t, bridgeApprovalDecision(t))
+	conflicting["payload"].(map[string]any)["decision"] = "approve specification spec:homebase:api-test:v1 (revised)"
+	conflicting["content_hash"] = payloadHash(t, conflicting["payload"])
+	conflictBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(mustJSON(t, conflicting)),
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(conflictBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(conflictBundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflicting Specification/Decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after rejected conflict = %d, want unchanged 2", got)
+	}
+
+	// A bad signature is rejected before anything is persisted.
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("bad Specification authority signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after bad signature = %d, want unchanged 2", got)
+	}
+
+	// A missing signature header is rejected the same way.
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(bundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("missing signature status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	// A wrong-authority signer (not the enrolled captain/contract key) is
+	// rejected identically to a corrupted signature.
+	_, otherPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSpecification := decodeObject(t, bridgeSpecification(t))
+	otherSpecification["id"] = "spec:homebase:other-test:v1"
+	otherDecision := decodeObject(t, bridgeApprovalDecision(t))
+	otherDecision["id"] = "decision:spec-other-test"
+	otherDecision["payload"].(map[string]any)["specification_ref"].(map[string]any)["id"] = "spec:homebase:other-test:v1"
+	otherDecision["content_hash"] = payloadHash(t, otherDecision["payload"])
+	otherBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(mustJSON(t, otherSpecification)),
+		"decision":      json.RawMessage(mustJSON(t, otherDecision)),
+	})
+	canonicalOther, err := records.CanonicalJSONValue(otherBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(otherBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", hex.EncodeToString(ed25519.Sign(otherPrivate, canonicalOther)))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-authority signer status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 2 {
+		t.Fatalf("record count after wrong-authority signer = %d, want unchanged 2", got)
+	}
+}
+
+func TestHandleAppendSpecificationDecisionRejectsWrongStatusAndMissingReference(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	sign := func(value []byte) string {
+		canonical, err := records.CanonicalJSONValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(ed25519.Sign(private, canonical))
+	}
+
+	// A proposed (not yet approved) Specification is rejected.
+	proposed := decodeObject(t, bridgeSpecification(t))
+	proposed["status"] = "proposed"
+	proposed["authority_class"] = records.AuthorityAgentProposal
+	proposed["source"] = map[string]any{"id": "knowledge-engine", "role": "knowledge_engine"}
+	delete(proposed["payload"].(map[string]any), "approval_ref")
+	proposed["content_hash"] = payloadHash(t, proposed["payload"])
+	proposedBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(mustJSON(t, proposed)),
+		"decision":      json.RawMessage(bridgeApprovalDecision(t)),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(proposedBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(proposedBundle))
+	response := httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("proposed specification status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 0 {
+		t.Fatalf("rejected proposed specification left %d records, want 0", got)
+	}
+
+	// A Decision missing specification_ref is rejected.
+	decision := decodeObject(t, bridgeApprovalDecision(t))
+	delete(decision["payload"].(map[string]any), "specification_ref")
+	decision["content_hash"] = payloadHash(t, decision["payload"])
+	missingRefBundle := mustJSON(t, map[string]any{
+		"specification": json.RawMessage(bridgeSpecification(t)),
+		"decision":      json.RawMessage(mustJSON(t, decision)),
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/specifications/decisions", bytes.NewReader(missingRefBundle))
+	request.Header.Set("X-HomeBase-Specification-Signature", sign(missingRefBundle))
+	response = httptest.NewRecorder()
+	server.HandleAppendSpecificationDecision(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing specification_ref status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 0 {
+		t.Fatalf("rejected missing-reference bundle left %d records, want 0", got)
 	}
 }
 
@@ -514,6 +847,74 @@ func bridgeSpecification(t *testing.T) []byte {
 		"freshness":       map[string]any{"mode": "immutable", "valid_until": nil}, "status": "approved",
 		"source": map[string]any{"id": "captain", "role": "captain"}, "payload": payload,
 	})
+}
+
+func TestHandleStatusReportsReadinessWithoutSecrets(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithRecords(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	response := httptest.NewRecorder()
+	server.HandleStatus(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/status = %d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if ct := response.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status body: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", body["status"])
+	}
+	if body["ledger_ready"] != true {
+		t.Fatalf("ledger_ready = %v, want true", body["ledger_ready"])
+	}
+	if body["record_store_ready"] != true {
+		t.Fatalf("record_store_ready = %v, want true", body["record_store_ready"])
+	}
+
+	forbidden := []string{"key", "priv", "secret", "journal", "receipt.priv", "bridge.pub"}
+	lowerBody := strings.ToLower(response.Body.String())
+	for _, needle := range forbidden {
+		if strings.Contains(lowerBody, needle) {
+			t.Fatalf("status response leaked forbidden term %q: %s", needle, response.Body.String())
+		}
+	}
+}
+
+func TestHandleStatusRejectsNonGET(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	server := NewServer(validation.NewValidator(nil, ledgerStore), nil, ledgerStore)
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		request := httptest.NewRequest(method, "/v1/status", nil)
+		response := httptest.NewRecorder()
+		server.HandleStatus(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /v1/status = %d, want 405", method, response.Code)
+		}
+	}
 }
 
 func decodeObject(t *testing.T, raw []byte) map[string]any {
