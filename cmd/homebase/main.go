@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"homebase/api"
 	"homebase/internal/cache"
@@ -41,7 +42,7 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize typed record journal: %v", err)
 	}
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
+	recordStore, storeAuthorities, err := records.NewStoreWithAuthorities(recordJournal)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to replay typed record journal: %v", err)
 	}
@@ -88,7 +89,7 @@ func main() {
 	if captainKey, publicErr := loadKey("HOMEBASE_CAPTAIN_PUBLIC_KEY_HEX", "HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE", ed25519.PublicKeySize); publicErr == nil {
 		captainPublic = ed25519.PublicKey(captainKey)
 		if receiptPrivate, privateErr := loadKey("HOMEBASE_RECEIPT_PRIVATE_KEY_HEX", "HOMEBASE_RECEIPT_PRIVATE_KEY_FILE", ed25519.PrivateKeySize); privateErr == nil {
-			promotionService, err = promotion.NewService(recordStore, promotion.Ed25519Verifier("captain", captainPublic), ed25519.PrivateKey(receiptPrivate), nil)
+			promotionService, err = promotion.NewServiceWithAuthority(recordStore, storeAuthorities.Promotion, promotion.Ed25519Verifier("captain", captainPublic), ed25519.PrivateKey(receiptPrivate), nil)
 			if err != nil {
 				log.Printf("WARNING: transcript promotion unavailable: authority state could not be rebuilt")
 			}
@@ -112,16 +113,23 @@ func main() {
 	} else {
 		log.Printf("WARNING: Bridge admission responses unavailable: HomeBase response signing key is not configured")
 	}
+
 	var verifierPublic ed25519.PublicKey
+	var verifierAuthority records.StoreVerifierAuthority
 	verifierKeyID := strings.TrimSpace(os.Getenv("HOMEBASE_VERIFIER_KEY_ID"))
 	if verifierKeyID == "" {
 		log.Printf("WARNING: production verifier receipts unavailable: HOMEBASE_VERIFIER_KEY_ID is not configured")
 	} else if verifierKey, verifierErr := loadKey("HOMEBASE_VERIFIER_PUBLIC_KEY_HEX", "HOMEBASE_VERIFIER_PUBLIC_KEY_FILE", ed25519.PublicKeySize); verifierErr == nil {
 		verifierPublic = ed25519.PublicKey(verifierKey)
+		if boundAuthority, authorityErr := loadVerifierAuthority(verifierKeyID, verifierPublic, storeAuthorities.VerifierPolicy); authorityErr == nil {
+			verifierAuthority = boundAuthority
+		} else {
+			log.Printf("WARNING: production verifier receipts unavailable: %v", authorityErr)
+		}
 	} else {
 		log.Printf("WARNING: production verifier receipts unavailable: %v", verifierErr)
 	}
-	server := api.NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID)
+	server := api.NewServerWithStoreAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID, storeAuthorities.ContractGrant)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
@@ -135,7 +143,7 @@ func main() {
 	mux.HandleFunc("/api/v1/contracts/grants", server.HandleAppendContractGrant)
 	mux.HandleFunc("/api/v1/specifications/decisions", server.HandleAppendSpecificationDecision)
 	mux.HandleFunc("/api/v1/contracts/grants/check", server.HandleCheckContractGrant)
-	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerification)
+	mux.HandleFunc("/api/v1/verifications/bridge", server.HandleAppendBridgeVerificationWithAuthority(verifierAuthority))
 
 	// 6. Start the Engine
 	port := os.Getenv("PORT")
@@ -157,6 +165,42 @@ func main() {
 	if err := http.Serve(listener, mux); err != nil {
 		log.Fatalf("Server halted: %v", err)
 	}
+}
+
+func loadVerifierAuthority(keyID string, publicKey ed25519.PublicKey, storeAuthority records.StoreAuthority) (records.StoreVerifierAuthority, error) {
+	validFromRaw := strings.TrimSpace(os.Getenv("HOMEBASE_VERIFIER_VALID_FROM"))
+	validUntilRaw := strings.TrimSpace(os.Getenv("HOMEBASE_VERIFIER_VALID_UNTIL"))
+	if validFromRaw == "" || validUntilRaw == "" {
+		return records.StoreVerifierAuthority{}, fmt.Errorf("HOMEBASE_VERIFIER_VALID_FROM and HOMEBASE_VERIFIER_VALID_UNTIL are required")
+	}
+	validFrom, err := time.Parse(time.RFC3339, validFromRaw)
+	if err != nil {
+		return records.StoreVerifierAuthority{}, fmt.Errorf("HOMEBASE_VERIFIER_VALID_FROM: %w", err)
+	}
+	validUntil, err := time.Parse(time.RFC3339, validUntilRaw)
+	if err != nil {
+		return records.StoreVerifierAuthority{}, fmt.Errorf("HOMEBASE_VERIFIER_VALID_UNTIL: %w", err)
+	}
+	var compromisedAt *time.Time
+	if compromisedRaw := strings.TrimSpace(os.Getenv("HOMEBASE_VERIFIER_COMPROMISED_AT")); compromisedRaw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, compromisedRaw)
+		if parseErr != nil {
+			return records.StoreVerifierAuthority{}, fmt.Errorf("HOMEBASE_VERIFIER_COMPROMISED_AT: %w", parseErr)
+		}
+		compromisedAt = &parsed
+	}
+	policy, err := records.NewVerifierPolicy([]records.VerifierAuthority{{
+		VerifierID:    "bridge:verifier:v2",
+		KeyID:         keyID,
+		PublicKey:     publicKey,
+		ValidFrom:     validFrom,
+		ValidUntil:    validUntil,
+		CompromisedAt: compromisedAt,
+	}})
+	if err != nil {
+		return records.StoreVerifierAuthority{}, err
+	}
+	return records.BindStoreVerifierPolicy(storeAuthority, policy)
 }
 
 func loadKey(hexEnv, fileEnv string, size int) ([]byte, error) {

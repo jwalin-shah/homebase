@@ -102,14 +102,16 @@ type bridgeReceipt struct {
 
 // VerifyBridgeReceiptAttestation checks the verifier-only signature after the
 // Bridge transport signature has authenticated the submitting client. The two
-// signatures answer different questions and must not be conflated.
+// signatures answer different questions and must not be conflated. Legacy
+// verifier identity remains replayable historical evidence, but is never valid
+// authority for a new admission.
 func VerifyBridgeReceiptAttestation(raw []byte, publicKey ed25519.PublicKey, expectedKeyID string) error {
 	receipt, err := decodeBridgeReceipt(raw)
 	if err != nil {
 		return err
 	}
 	if receipt.VerifierID == legacyVerifierID {
-		return nil
+		return fmt.Errorf("%w: legacy verifier identity is not admitted for new submissions", ErrAuthorityRequired)
 	}
 	if receipt.VerifierID != productionVerifierID {
 		return invalid("unsupported Bridge verifier identity %q", receipt.VerifierID)
@@ -134,7 +136,10 @@ func VerifyBridgeReceiptAttestation(raw []byte, publicKey ed25519.PublicKey, exp
 	return nil
 }
 
-func (s *Store) AppendBridgeVerificationSubmission(raw []byte) (VerificationCommitResult, error) {
+// appendBridgeVerificationSubmission performs the journal mutation after the
+// caller has passed the live verifier-policy boundary. Historical replay does
+// not call this entry point.
+func (s *Store) appendBridgeVerificationSubmission(raw []byte) (VerificationCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureHealthy(); err != nil {

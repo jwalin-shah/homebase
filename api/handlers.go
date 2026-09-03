@@ -25,15 +25,16 @@ import (
 
 // Server binds the HTTP layer to our formal Graph Engine.
 type Server struct {
-	validator     *validation.Validator
-	signer        *signing.Signer
-	store         *ledger.Store
-	recordStore   *records.Store
-	promotion     *promotion.Service
-	bridgeKey     ed25519.PublicKey
-	verifierKey   ed25519.PublicKey
-	verifierKeyID string
-	contractKey   ed25519.PublicKey
+	validator              *validation.Validator
+	signer                 *signing.Signer
+	store                  *ledger.Store
+	recordStore            *records.Store
+	contractGrantAuthority records.StoreAuthority
+	promotion              *promotion.Service
+	bridgeKey              ed25519.PublicKey
+	verifierKey            ed25519.PublicKey
+	verifierKeyID          string
+	contractKey            ed25519.PublicKey
 	// admissionPrivate signs the response to Bridge's read-only authority
 	// check. Request authentication alone is insufficient: without this key,
 	// a local proxy could forge a matching 200 response after the request was
@@ -86,11 +87,21 @@ func NewServerWithPromotionAndBridge(v *validation.Validator, s *signing.Signer,
 // NewServerWithAuthorities wires the owner-authenticated Contract/Grant path,
 // transcript promotion, and Bridge verification path together. Each public
 // key is copied and an absent key leaves only that specific endpoint
-// unavailable.
+// unavailable. This legacy constructor does not grant live Contract/Grant
+// Store authority; production uses the authority-bearing constructor below.
 func NewServerWithAuthorities(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey) *Server {
 	server := NewServerWithBridge(v, s, st, rs, bridgeKey)
 	server.promotion = ps
 	server.contractKey = append(ed25519.PublicKey(nil), contractKey...)
+	return server
+}
+
+// NewServerWithContractGrantAuthority adds the Store-bound capability required
+// to persist a successfully authenticated Contract/Grant bundle. The
+// capability is intentionally distinct from the Ed25519 request key.
+func NewServerWithContractGrantAuthority(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey, authority records.StoreAuthority) *Server {
+	server := NewServerWithAuthorities(v, s, st, rs, ps, contractKey, bridgeKey)
+	server.contractGrantAuthority = authority
 	return server
 }
 
@@ -109,6 +120,16 @@ func NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(v *validation.Valid
 	server := NewServerWithAuthoritiesAndAdmissionResponse(v, s, st, rs, ps, contractKey, bridgeKey, admissionPrivate)
 	server.verifierKey = append(ed25519.PublicKey(nil), verifierPublic...)
 	server.verifierKeyID = strings.TrimSpace(verifierKeyID)
+	return server
+}
+
+// NewServerWithStoreAuthoritiesAndAdmissionResponseAndVerifier is the
+// production authority-bearing constructor. It preserves the existing crypto
+// authentication paths while injecting only the ContractGrant Store capability
+// into the mutation-capable HTTP server.
+func NewServerWithStoreAuthoritiesAndAdmissionResponseAndVerifier(v *validation.Validator, s *signing.Signer, st *ledger.Store, rs *records.Store, ps *promotion.Service, contractKey, bridgeKey ed25519.PublicKey, admissionPrivate ed25519.PrivateKey, verifierPublic ed25519.PublicKey, verifierKeyID string, contractGrantAuthority records.StoreAuthority) *Server {
+	server := NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(v, s, st, rs, ps, contractKey, bridgeKey, admissionPrivate, verifierPublic, verifierKeyID)
+	server.contractGrantAuthority = contractGrantAuthority
 	return server
 }
 
@@ -199,9 +220,11 @@ func (s *Server) HandleAppendContractGrant(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Contract authority signature failed", http.StatusUnauthorized)
 		return
 	}
-	result, err := s.recordStore.AppendContractAndGrant(request.Specification, request.Contract, request.Grant)
+	result, err := s.recordStore.AppendContractAndGrantAuthorized(s.contractGrantAuthority, request.Specification, request.Contract, request.Grant)
 	if err != nil {
 		switch {
+		case errors.Is(err, records.ErrAuthorityRequired):
+			http.Error(w, "Contract authority service unavailable", http.StatusServiceUnavailable)
 		case errors.Is(err, records.ErrInvalidRecord):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		case errors.Is(err, records.ErrConflict):

@@ -155,26 +155,17 @@ func TestDuplicateIDWithDifferentRecordIsConflict(t *testing.T) {
 }
 
 func TestCrossRecordReferencesAndIdempotencyAreEnforced(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validContract(t, "contract-1"),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+	)
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := store.Append(validObservation(t, "observation-1", "grant-1")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append(validGrant(t, "grant-2", "contract-1", "idem-1")); !errors.Is(err, ErrInvalidRecord) {
+	if _, err := appendValidatedForCrossRecordTest(t, store, validGrant(t, "grant-2", "contract-1", "idem-1")); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("duplicate grant idempotency result = %v", err)
 	}
 	if _, err := store.Append(validObservation(t, "observation-missing", "grant-missing")); !errors.Is(err, ErrInvalidRecord) {
@@ -183,48 +174,33 @@ func TestCrossRecordReferencesAndIdempotencyAreEnforced(t *testing.T) {
 }
 
 func TestVerificationReceiptReferencesVerifiedRecords(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validContract(t, "contract-1"),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+		validProof(t, "proof-1"),
+	)
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	if _, err := store.Append(validContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validGrant(t, "grant-1", "contract-1", "idem-1")); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := store.Append(validObservation(t, "observation-1", "grant-1")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append(validProof(t, "proof-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Append(validVerificationReceiptWithRefs(t, "receipt-1", "verifier-1", "proof-1", "observation-1")); err != nil {
+	if _, err := appendValidatedForCrossRecordTest(t, store, validVerificationReceiptWithRefs(t, "receipt-1", "verifier-1", "proof-1", "observation-1")); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestVerificationReceiptRejectsMismatchedReferenceKindsAndLineage(t *testing.T) {
-	j, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, j, _ := newStoreWithHistoricalRecords(t,
+		validApprovalDecision(t),
+		validSpecification(t),
+		validContract(t, "contract-1"),
+		validGrant(t, "grant-1", "contract-1", "idem-1"),
+		validProof(t, "proof-1"),
+	)
 	defer j.Close()
-	store, err := NewStore(j)
-	if err != nil {
+	if _, err := store.Append(validObservation(t, "observation-1", "grant-1")); err != nil {
 		t.Fatal(err)
-	}
-	appendApprovedSpecification(t, store)
-	for _, raw := range [][]byte{validContract(t, "contract-1"), validGrant(t, "grant-1", "contract-1", "idem-1"), validObservation(t, "observation-1", "grant-1"), validProof(t, "proof-1")} {
-		if _, err := store.Append(raw); err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	t.Run("reference kind cannot lie about target record", func(t *testing.T) {
@@ -232,7 +208,7 @@ func TestVerificationReceiptRejectsMismatchedReferenceKindsAndLineage(t *testing
 		payload := value["payload"].(map[string]any)
 		payload["worker_claim_ref"] = map[string]any{"kind": "claim", "id": "contract-1"}
 		value["content_hash"] = payloadHash(t, payload)
-		if _, err := store.Append(mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
+		if _, err := appendValidatedForCrossRecordTest(t, store, mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("append error = %v, want ErrInvalidRecord", err)
 		}
 	})
@@ -243,7 +219,7 @@ func TestVerificationReceiptRejectsMismatchedReferenceKindsAndLineage(t *testing
 		checks := payload["checks"].([]any)
 		checks[0].(map[string]any)["evidence_ref"] = map[string]any{"kind": "contract", "id": "contract-1"}
 		value["content_hash"] = payloadHash(t, payload)
-		if _, err := store.Append(mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
+		if _, err := appendValidatedForCrossRecordTest(t, store, mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("append error = %v, want ErrInvalidRecord", err)
 		}
 	})
@@ -253,7 +229,7 @@ func TestVerificationReceiptRejectsMismatchedReferenceKindsAndLineage(t *testing
 		payload := value["payload"].(map[string]any)
 		payload["task_id"] = "task-other"
 		value["content_hash"] = payloadHash(t, payload)
-		if _, err := store.Append(mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
+		if _, err := appendValidatedForCrossRecordTest(t, store, mustJSON(t, value)); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("append error = %v, want ErrInvalidRecord", err)
 		}
 	})

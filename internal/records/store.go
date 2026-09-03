@@ -229,6 +229,9 @@ func (s *Store) Append(raw []byte) (AppendResult, error) {
 	if err != nil {
 		return AppendResult{}, err
 	}
+	if record.AuthorityClass != AuthorityUntrustedText && record.AuthorityClass != AuthorityWorkerObservation && record.AuthorityClass != AuthorityAgentProposal {
+		return AppendResult{}, fmt.Errorf("%w: %s/%s", ErrAuthorityRequired, record.Kind, record.AuthorityClass)
+	}
 	return s.appendValidated(record, canonical)
 }
 
@@ -253,11 +256,11 @@ func (s *Store) AppendExternal(raw []byte) (AppendResult, error) {
 	return s.appendValidated(record, canonical)
 }
 
-// AppendPromotionCommit atomically persists the evidence, decision, and
-// authority-owned receipt in one journal entry. Promotion is the only caller
-// allowed to create this bundle; records still validates the typed record
-// envelopes and the decision-to-evidence lineage.
-func (s *Store) AppendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw []byte) (PromotionCommitResult, error) {
+// appendPromotionCommit atomically persists the evidence, decision, and
+// authority-owned receipt in one journal entry. The public live entry point is
+// AppendPromotionCommitAuthorized; keeping this implementation package-private
+// prevents callers from bypassing StoreAuthority mediation.
+func (s *Store) appendPromotionCommit(decisionRaw, evidenceRaw, receiptRaw []byte) (PromotionCommitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureHealthy(); err != nil {

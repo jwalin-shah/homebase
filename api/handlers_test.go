@@ -72,50 +72,53 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	fixedNow := time.Date(2026, 7, 28, 12, 30, 0, 0, time.UTC)
+	clock := func() time.Time { return fixedNow }
+	recordStore, recordJournal, storeAuthorities := newAPIStoreWithHistoricalRecordsAndClockAndAuthorities(t, clock,
+		bridgeApprovalDecision(t),
+		bridgeSpecification(t),
+		bridgeProductionVerificationContract(t, "contract-1"),
+		bridgeGrant(t, "grant-1", "contract-1"),
+	)
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
+
+	transportPublic, transportPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeVerificationContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	public, private, err := ed25519.GenerateKey(rand.Reader)
+	verifierPublic, verifierPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	responsePublic, responsePrivate, err := ed25519.GenerateKey(rand.Reader)
+	_, responsePrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = responsePublic
-	server := NewServerWithAuthoritiesAndAdmissionResponse(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, nil, public, responsePrivate)
-	raw := bridgeReceipt(t)
+	verifierAuthority := bindAPIVerifierAuthorityForTest(
+		t,
+		storeAuthorities.VerifierPolicy,
+		verifierPublic,
+		"bridge-verifier-key-1",
+		time.Date(2026, 7, 28, 11, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 28, 13, 0, 0, 0, time.UTC),
+	)
+	server := NewServerWithAuthoritiesAndAdmissionResponse(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, nil, transportPublic, responsePrivate)
+	server.now = clock
+	handler := server.HandleAppendBridgeVerificationWithAuthority(verifierAuthority)
+	raw := productionBridgeReceiptForAPI(t, verifierPrivate, "bridge-verifier-key-1")
 	sign := func(value []byte) string {
 		canonical, err := records.CanonicalJSONValue(value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return hex.EncodeToString(ed25519.Sign(private, canonical))
+		return hex.EncodeToString(ed25519.Sign(transportPrivate, canonical))
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
 	request.Header.Set("X-Bridge-Verification-Signature", sign(raw))
 	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response := httptest.NewRecorder()
-	server.HandleAppendBridgeVerification(response, request)
+	handler(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("first Bridge append status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -138,7 +141,7 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	request.Header.Set("X-Bridge-Verification-Signature", sign(raw))
 	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response = httptest.NewRecorder()
-	server.HandleAppendBridgeVerification(response, request)
+	handler(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("duplicate Bridge append status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -159,10 +162,10 @@ func TestHandleAppendBridgeVerificationAuthenticatesAndCommitsAtomically(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/verifications/bridge", bytes.NewReader(raw))
-	request.Header.Set("X-Bridge-Verification-Signature", hex.EncodeToString(ed25519.Sign(private, []byte("wrong"))))
+	request.Header.Set("X-Bridge-Verification-Signature", hex.EncodeToString(ed25519.Sign(transportPrivate, []byte("wrong"))))
 	request.Header.Set("Idempotency-Key", "receipt:task-1:0123456789012345678901234567890123456789")
 	response = httptest.NewRecorder()
-	server.HandleAppendBridgeVerification(response, request)
+	handler(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("tampered signature status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -174,23 +177,13 @@ func TestHandleAppendContractGrantAuthenticatesAndCommitsAtomically(t *testing.T
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordStore, recordJournal, storeAuthorities := newAPIStoreWithHistoricalRecordsAndAuthorities(t, bridgeApprovalDecision(t))
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServerWithAuthorities(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil)
+	server := NewServerWithContractGrantAuthority(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore, nil, public, nil, storeAuthorities.ContractGrant)
 	bundle := mustJSON(t, map[string]any{
 		"specification": json.RawMessage(bridgeSpecification(t)),
 		"contract":      json.RawMessage(bridgeContract(t, "contract-1")),
@@ -451,27 +444,13 @@ func TestHandleCheckContractGrantRequiresBridgeSignatureAndMatchingScope(t *test
 		t.Fatal(err)
 	}
 	defer ledgerStore.Close()
-	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordStore, recordJournal := newAPIStoreWithHistoricalRecords(t,
+		bridgeApprovalDecision(t),
+		bridgeSpecification(t),
+		bridgeContract(t, "contract-1"),
+		bridgeGrant(t, "grant-1", "contract-1"),
+	)
 	defer recordJournal.Close()
-	recordStore, err := records.NewStore(recordJournal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeApprovalDecision(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeSpecification(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeContract(t, "contract-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := recordStore.Append(bridgeGrant(t, "grant-1", "contract-1")); err != nil {
-		t.Fatal(err)
-	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
