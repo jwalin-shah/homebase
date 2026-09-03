@@ -8,7 +8,7 @@ Before deployment, an operator must:
 
 1. preserve the original journal as evidence;
 2. inspect each legacy Contract/CapabilityGrant pair;
-3. obtain a new captain-approved Specification and Decision binding;
+3. obtain a new captain-approved Specification and Decision binding through `/api/v1/specifications/decisions` (or an equivalent owner-signed atomic commit);
 4. issue a new Contract and CapabilityGrant through the authenticated atomic endpoint; and
 5. reopen the new journal and run the full HomeBase and cross-project certification checks.
 
