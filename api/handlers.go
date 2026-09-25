@@ -15,6 +15,7 @@ import (
 
 	"homebase/internal/application"
 	"homebase/internal/domain"
+	"homebase/internal/epistemic"
 	"homebase/internal/ledger"
 	"homebase/internal/promotion"
 	"homebase/internal/records"
@@ -30,6 +31,7 @@ type Server struct {
 	store         *ledger.Store
 	recordStore   *records.Store
 	promotion     *promotion.Service
+	epistemic     *epistemic.Service
 	bridgeKey     ed25519.PublicKey
 	verifierKey   ed25519.PublicKey
 	verifierKeyID string
@@ -41,6 +43,57 @@ type Server struct {
 	admissionPrivate ed25519.PrivateKey
 	attemptSvc       *application.AttemptService
 	now              func() time.Time
+}
+
+// SetEpistemicPromotion wires the dedicated research intake service before the
+// HTTP server starts. It is deliberately separate from transcript promotion.
+func (s *Server) SetEpistemicPromotion(service *epistemic.Service) {
+	s.epistemic = service
+}
+
+// HandlePromoteEpistemic accepts authenticated research provenance without
+// treating provider output as a captain-approved transcript or canonical fact.
+func (s *Server) HandlePromoteEpistemic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.epistemic == nil {
+		http.Error(w, "epistemic promotion unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "invalid or oversized epistemic submission", http.StatusBadRequest)
+		return
+	}
+	signature, err := hex.DecodeString(strings.TrimSpace(r.Header.Get("X-HomeBase-Epistemic-Signature")))
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		http.Error(w, "epistemic signature required", http.StatusUnauthorized)
+		return
+	}
+	outcome, err := s.epistemic.Accept(raw, signature)
+	if err != nil {
+		switch {
+		case errors.Is(err, epistemic.ErrUnauthenticated):
+			http.Error(w, "epistemic authentication failed", http.StatusUnauthorized)
+		case errors.Is(err, epistemic.ErrInvalid), errors.Is(err, records.ErrInvalidRecord):
+			http.Error(w, "invalid epistemic submission", http.StatusBadRequest)
+		case errors.Is(err, records.ErrConflict):
+			http.Error(w, "epistemic submission conflict", http.StatusConflict)
+		default:
+			http.Error(w, "epistemic acceptance failed", http.StatusInternalServerError)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if outcome.Existing {
+		status = http.StatusOK
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(outcome)
 }
 
 // NewServer initializes the API.

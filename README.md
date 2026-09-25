@@ -1,6 +1,6 @@
 # HomeBase: Contract/Grant Admission and Durable Signed Receipt Authority
 
-**Status:** Implemented — local HTTP service on 127.0.0.1:9102
+**Status:** Source binds to loopback; `PORT` defaults to 8080. The deployment's canonical caller URL must be read from its service configuration before Bridge activation.
 
 ---
 
@@ -26,6 +26,10 @@ Implemented components:
 - **Bridge verification receipt endpoints** — Bridge-signed transport receipts
   that HomeBase derives into Claim/Proof/VerificationReceipt records and
   commits atomically against the pre-existing Contract and CapabilityGrant.
+- **Epistemic promotion** — authenticated research-run provenance, source
+  Evidence, status-preserving Claims, and a signed acceptance Proof committed
+  atomically. Acceptance attests to provenance intake, not claim truth or
+  captain approval.
 - **Configured authority keys** — captain, Bridge transport, admission
   response, verifier, and receipt keys loaded from `~/.local/state/homebase/keys/`.
 
@@ -38,6 +42,7 @@ All routes are `POST` and bind to `127.0.0.1` only. Verified in
 |---|---|---|
 | `/api/v1/records` | `HandleAppendExternalRecord` | Public ingress for Trajectory and other untrusted producers; validates the envelope, verifies the payload hash, fsyncs before returning success |
 | `/api/v1/promotions/transcript` | `HandlePromoteTranscript` | Admission of a transcript-derived decision through the authenticated promotion service; evidence, decision, and signed receipt committed together |
+| `/api/v1/promotions/evidence` | `HandlePromoteEpistemic` | Authenticated ProviderResearchRun provenance, Evidence, epistemic-status Claims, and signed acceptance Proof in a dedicated atomic journal event; no transcript or captain-approval semantics |
 | `/api/v1/contracts/grants` | `HandleAppendContractGrant` | Owner-signed admission of Specification + Contract + scoped CapabilityGrant as one journal commit |
 | `/api/v1/specifications/decisions` | `HandleAppendSpecificationDecision` | Owner-signed admission of a captain-approved Specification + its approving Decision as one atomic, idempotent journal commit; reuses the captain/contract signing key |
 | `/api/v1/contracts/grants/check` | `HandleCheckContractGrant` | Read-only Bridge admission check: proves an approved Contract + active CapabilityGrant exist with exact scope match, freshness, and expiry; Bridge cannot mint or extend authority |
@@ -67,11 +72,23 @@ Environment variables (`HOMEBASE_CAPTAIN_PUBLIC_KEY_FILE`,
 once (see `dotfiles/bin/provision-authority-keys.sh`) and persisted; they are
 never generated per-launch.
 
+The optional epistemic route requires `HOMEBASE_EPISTEMIC_PROMOTER_ID`,
+`HOMEBASE_EPISTEMIC_PROMOTER_PUBLIC_KEY_FILE`,
+`HOMEBASE_EPISTEMIC_RECEIPT_KEY_ID`, and
+`HOMEBASE_EPISTEMIC_RECEIPT_PRIVATE_KEY_FILE`. It remains unavailable if any
+reference is absent or invalid. Requests are authenticated with the detached
+Ed25519 signature in `X-HomeBase-Epistemic-Signature` over canonical JSON.
+`/api/v1/records` remains untrusted-only.
+
 ## How Bridge integrates
 
 Bridge is the caller of the authority chain:
 
-- `BRIDGE_HOMEBASE_URL=http://127.0.0.1:9102` — HomeBase's HTTP address.
+- `BRIDGE_HOMEBASE_URL=http://127.0.0.1:9102` is a historical configuration
+  example, not a verified deployment value. This source defaults `PORT` to
+  `8080`, and current OCI inventory observes a HomeBase listener on
+  `127.0.0.1:8080`; the deployed Bridge caller URL still requires service
+  configuration readback before activation.
 - Bridge signs contract/grant checks with **its private key**
   (`~/.local/state/homebase/keys/bridge.priv`); HomeBase verifies with
   `bridge.pub`.
@@ -85,10 +102,22 @@ Bridge checks the grant before creating a worktree → Bridge verifies the
 worker result → HomeBase commits the verification receipt → authorized
 delivery.
 
-## Research (not implemented)
+## Research evidence promotion
 
-The following is **design/speculation — not the live behavior of this server**.
-It is preserved for reference only.
+`POST /api/v1/promotions/evidence` is a separate authenticated intake boundary.
+It validates provider-run and source hashes, HTTPS source provenance, source
+lineage, freshness, claim status, and Evidence references. The append-only
+journal stores the complete bundle as one `EpistemicAcceptanceCommit` event.
+Evidence and Claims retain `untrusted_text` authority; the signed Proof
+attests that the submitted provenance bundle passed intake checks. Its receipt
+sets `claims_asserted_true=false` and does not imply a captain-approved
+Decision. Conflicting epistemic statuses remain explicit in the receipt.
+
+This candidate implements local source behavior. It has no live key provisioning,
+deployment, or HomeBase acceptance until a separately authorized runtime rollout.
+
+The following remaining material is design/reference documentation, not live
+behavior of this server:
 
 - **`SYSTEM-DESIGN.md`** — the formal graph-structured system design
   (graph states, 5-state transitions, 6 provable invariants I1–I6, TLA-style

@@ -118,6 +118,7 @@ type Store struct {
 	verifications          map[string]storedVerification
 	contractGrants         map[string]storedContractGrant
 	specificationDecisions map[string]storedSpecificationDecision
+	epistemicAcceptances   map[string]storedEpistemicAcceptance
 	poisoned               error
 	now                    func() time.Time
 }
@@ -145,7 +146,7 @@ func newStore(j *journal.BinaryJournal, clock func() time.Time) (*Store, error) 
 	if j == nil {
 		return nil, fmt.Errorf("%w: journal is required", ErrInvalidRecord)
 	}
-	s := &Store{journal: j, now: clock, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification), contractGrants: make(map[string]storedContractGrant), specificationDecisions: make(map[string]storedSpecificationDecision)}
+	s := &Store{journal: j, now: clock, records: make(map[string]storedRecord), promotions: make(map[string]storedPromotion), verifications: make(map[string]storedVerification), contractGrants: make(map[string]storedContractGrant), specificationDecisions: make(map[string]storedSpecificationDecision), epistemicAcceptances: make(map[string]storedEpistemicAcceptance)}
 	if err := j.Replay(func(seq uint64, payload []byte) error {
 		envelope, err := journal.DecodeRecord(payload)
 		if err != nil {
@@ -198,6 +199,12 @@ func newStore(j *journal.BinaryJournal, clock func() time.Time) (*Store, error) 
 		if envelope.Kind == journal.RecordKindSpecificationDecisionCommit {
 			if err := s.replaySpecificationDecisionCommit(seq, envelope.Payload); err != nil {
 				return fmt.Errorf("specification/decision commit journal entry %d: %w", seq, err)
+			}
+			return nil
+		}
+		if envelope.Kind == journal.RecordKindEpistemicAcceptanceCommit {
+			if err := s.replayEpistemicAcceptanceCommit(seq, envelope.Payload); err != nil {
+				return fmt.Errorf("epistemic acceptance commit journal entry %d: %w", seq, err)
 			}
 			return nil
 		}
@@ -1338,6 +1345,15 @@ func allowedOptional(kind, key string) bool {
 		return true
 	}
 	if kind == "Specification" && key == "approval_ref" {
+		return true
+	}
+	if kind == "Evidence" && isOneOf(key, "provider_research_run", "source_uri", "publisher_identity", "retrieved_at", "source_timestamp", "source_lineage_sha256", "source_content_available", "freshness_status", "input_sha256", "output_sha256") {
+		return true
+	}
+	if kind == "Claim" && isOneOf(key, "epistemic_status", "source_lineage_refs", "promotion_submission_id", "contradiction_refs") {
+		return true
+	}
+	if kind == "Proof" && key == "epistemic_acceptance_receipt" {
 		return true
 	}
 	return false
