@@ -13,6 +13,7 @@ import (
 
 	"homebase/api"
 	"homebase/internal/cache"
+	"homebase/internal/epistemic"
 	"homebase/internal/journal"
 	"homebase/internal/ledger"
 	"homebase/internal/promotion"
@@ -122,6 +123,20 @@ func main() {
 		log.Printf("WARNING: production verifier receipts unavailable: %v", verifierErr)
 	}
 	server := api.NewServerWithAuthoritiesAndAdmissionResponseAndVerifier(validator, signer, store, recordStore, promotionService, captainPublic, bridgePublic, admissionPrivate, verifierPublic, verifierKeyID)
+	epistemicPrincipal := strings.TrimSpace(os.Getenv("HOMEBASE_EPISTEMIC_PROMOTER_ID"))
+	epistemicReceiptKeyID := strings.TrimSpace(os.Getenv("HOMEBASE_EPISTEMIC_RECEIPT_KEY_ID"))
+	epistemicRequestKey, requestKeyErr := loadKeyFromFile("HOMEBASE_EPISTEMIC_PROMOTER_PUBLIC_KEY_FILE", ed25519.PublicKeySize)
+	epistemicReceiptKey, receiptKeyErr := loadKeyFromFile("HOMEBASE_EPISTEMIC_RECEIPT_PRIVATE_KEY_FILE", ed25519.PrivateKeySize)
+	var epistemicService *epistemic.Service
+	if requestKeyErr == nil && receiptKeyErr == nil && epistemicPrincipal != "" && epistemicReceiptKeyID != "" {
+		epistemicService, err = epistemic.NewService(recordStore, epistemicPrincipal, ed25519.PublicKey(epistemicRequestKey), epistemicReceiptKeyID, ed25519.PrivateKey(epistemicReceiptKey), nil)
+		if err != nil {
+			log.Printf("WARNING: epistemic promotion unavailable: authority configuration is invalid")
+		}
+	} else {
+		log.Printf("WARNING: epistemic promotion unavailable: promoter and receipt key references are incomplete")
+	}
+	server.SetEpistemicPromotion(epistemicService)
 
 	// 5. Mount the Endpoints
 	mux := http.NewServeMux()
@@ -132,6 +147,7 @@ func main() {
 	// Engine decision path.
 	mux.HandleFunc("/api/v1/records", server.HandleAppendExternalRecord)
 	mux.HandleFunc("/api/v1/promotions/transcript", server.HandlePromoteTranscript)
+	mux.HandleFunc("/api/v1/promotions/evidence", server.HandlePromoteEpistemic)
 	mux.HandleFunc("/api/v1/contracts/grants", server.HandleAppendContractGrant)
 	mux.HandleFunc("/api/v1/specifications/decisions", server.HandleAppendSpecificationDecision)
 	mux.HandleFunc("/api/v1/contracts/grants/check", server.HandleCheckContractGrant)
@@ -157,6 +173,10 @@ func main() {
 	if err := http.Serve(listener, mux); err != nil {
 		log.Fatalf("Server halted: %v", err)
 	}
+}
+
+func loadKeyFromFile(fileEnv string, size int) ([]byte, error) {
+	return loadKey("", fileEnv, size)
 }
 
 func loadKey(hexEnv, fileEnv string, size int) ([]byte, error) {

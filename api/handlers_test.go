@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"homebase/internal/epistemic"
 	"homebase/internal/journal"
 	"homebase/internal/ledger"
 	"homebase/internal/records"
 	"homebase/internal/validation"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +65,84 @@ func TestHandleAppendExternalRecordUsesTypedDurableBoundary(t *testing.T) {
 	server.HandleAppendExternalRecord(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("authoritative append status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlePromoteEpistemicAuthenticatesAndCommitsTypedBundle(t *testing.T) {
+	ledgerStore, err := ledger.NewStore(t.TempDir() + "/legacy.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	recordJournal, err := journal.OpenBinaryJournal(t.TempDir() + "/records.journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recordJournal.Close()
+	recordStore, err := records.NewStore(recordJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPublic, requestPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, receiptPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := epistemic.NewService(recordStore, "research-ingestor", requestPublic, "epistemic-key-v1", receiptPrivate, func() time.Time {
+		return time.Date(2026, 9, 24, 22, 0, 0, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithRecords(validation.NewValidator(nil, ledgerStore), nil, ledgerStore, recordStore)
+	server.SetEpistemicPromotion(service)
+
+	hash := func(ch string) string { return strings.Repeat(ch, 64) }
+	lineage := sha256.Sum256([]byte("https://opentelemetry.io/docs/specs/otel/logs/data-model"))
+	requestValue := epistemic.Request{
+		Version: "homebase.epistemic_submission.v1", SubmissionID: "api-submission-1",
+		InputSHA256: hash("a"), OutputSHA256: hash("b"), FreshnessMaxAgeSeconds: 3600,
+		Runs:     []epistemic.ProviderResearchRun{{RunID: "run-one", Provider: "hyperagent", InputSHA256: hash("a"), OutputSHA256: hash("c"), SourceArtifactSHA256: hash("d"), StartedAt: "2026-09-24T21:29:00Z", CompletedAt: "2026-09-24T21:31:00Z", RetrievedAt: "2026-09-24T21:30:00Z"}},
+		Evidence: []epistemic.EvidenceItem{{EvidenceID: "evidence-one", RunID: "run-one", SourceURI: "https://opentelemetry.io/docs/specs/otel/logs/data-model/", Publisher: "opentelemetry.io", ContentSHA256: hash("e"), LineageSHA256: hex.EncodeToString(lineage[:]), SourceTimestamp: "2026-09-24T21:00:00Z", RetrievedAt: "2026-09-24T21:30:00Z", ContentAvailable: false}},
+		Claims:   []epistemic.Claim{{ClaimID: "claim-one", Text: "Trace fields derive from active context.", EpistemicStatus: "UNVERIFIED", EvidenceRefs: []string{"evidence-one"}}},
+	}
+	raw, err := json.Marshal(requestValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := records.CanonicalJSONValue(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := hex.EncodeToString(ed25519.Sign(requestPrivate, canonical))
+
+	wrongMethod := httptest.NewRequest(http.MethodGet, "/api/v1/promotions/evidence", nil)
+	wrongResponse := httptest.NewRecorder()
+	server.HandlePromoteEpistemic(wrongResponse, wrongMethod)
+	if wrongResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d", wrongResponse.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/evidence", bytes.NewReader(raw))
+	request.Header.Set("X-HomeBase-Epistemic-Signature", signature)
+	response := httptest.NewRecorder()
+	server.HandlePromoteEpistemic(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if got := len(recordStore.List()); got != 3 {
+		t.Fatalf("accepted record count = %d, want 3", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/promotions/evidence", bytes.NewReader(raw))
+	request.Header.Set("X-HomeBase-Epistemic-Signature", signature)
+	response = httptest.NewRecorder()
+	server.HandlePromoteEpistemic(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, body=%s", response.Code, response.Body.String())
 	}
 }
 

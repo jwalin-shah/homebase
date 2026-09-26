@@ -15,6 +15,7 @@ const (
 	RecordKindVerificationCommit                 = "VerificationCommit"
 	RecordKindContractGrantCommit                = "ContractGrantCommit"
 	RecordKindSpecificationDecisionCommit        = "SpecificationDecisionCommit"
+	RecordKindEpistemicAcceptanceCommit          = "EpistemicAcceptanceCommit"
 	RecordEnvelopeVersion                 uint16 = 1
 )
 
